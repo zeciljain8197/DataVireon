@@ -59,6 +59,8 @@ export default function Home() {
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [repoOwner, setRepoOwner]       = useState("")
   const [showRepo, setShowRepo]         = useState(false)
+  const [advisory, setAdvisory]         = useState<any>(null)
+  const [advisoryLoading, setAdvisoryLoading] = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -192,6 +194,29 @@ export default function Home() {
     setPrevSteps(newPrev)
     setStep(null)
     setRawStream("")
+  }
+
+  async function runAdvisory() {
+    setAdvisoryLoading(true)
+    setAdvisory(null)
+    let full = ""
+    try {
+      const res = await fetch("http://localhost:8000/advisory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codebase, role, problem, diagnostic }),
+      })
+      const reader = res.body!.getReader()
+      const dec = new TextDecoder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        full += dec.decode(value)
+      }
+      const match = full.match(/\{[\s\S]*\}/)
+      if (match) setAdvisory(JSON.parse(match[0]))
+    } catch(e) { console.error(e) }
+    setAdvisoryLoading(false)
   }
 
   async function fetchRepo() {
@@ -402,10 +427,69 @@ export default function Home() {
           {sessionId && (
             <p className="text-xs text-gray-600 mb-4">Session saved — ID: {sessionId.slice(0,8)}...</p>
           )}
-          <button onClick={() => runStep()} disabled={stepLoading}
-            className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
-            {stepLoading ? "Generating fix..." : "Start resolution →"}
-          </button>
+          {mode === "advisory" ? (
+            <button onClick={runAdvisory} disabled={advisoryLoading}
+              className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
+              {advisoryLoading ? "Generating recommendations..." : "Get recommendations →"}
+            </button>
+          ) : (
+            <button onClick={() => runStep()} disabled={stepLoading}
+              className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
+              {stepLoading ? "Generating fix..." : "Start resolution →"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {advisoryLoading && (
+        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm text-gray-400 animate-pulse">
+          Generating recommendations...
+        </div>
+      )}
+
+      {advisory && !advisoryLoading && (
+        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <p className="text-xs uppercase tracking-widest text-gray-500 mb-2">Advisory report</p>
+          <p className="text-gray-300 text-sm leading-relaxed mb-6">{advisory.summary}</p>
+
+          {advisory.quick_wins?.length > 0 && (
+            <div className="mb-6 bg-green-950 border border-green-900 rounded-lg p-4">
+              <p className="text-xs text-green-400 uppercase tracking-widest mb-2">Quick wins</p>
+              <ul className="space-y-1">
+                {advisory.quick_wins.map((w: string, i: number) => (
+                  <li key={i} className="text-sm text-green-300 flex gap-2">
+                    <span>⚡</span>{w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="space-y-4">
+            {advisory.recommendations?.map((r: any, i: number) => (
+              <div key={i} className="border border-gray-800 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">#{r.priority}</span>
+                  <span className={"text-xs font-medium uppercase " + (
+                    r.severity === "critical" ? "text-red-400" :
+                    r.severity === "high" ? "text-orange-400" :
+                    r.severity === "medium" ? "text-yellow-400" : "text-green-400"
+                  )}>{r.severity}</span>
+                  <span className="text-xs text-gray-500 ml-auto">effort: {r.effort}</span>
+                </div>
+                <p className="text-white text-sm font-medium mb-2">{r.title}</p>
+                <p className="text-gray-400 text-sm leading-relaxed mb-3">{r.explanation}</p>
+                <div className="bg-gray-950 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">Action</p>
+                  <p className="text-sm text-indigo-300">{r.action}</p>
+                </div>
+                <button onClick={() => navigator.clipboard.writeText(r.action)}
+                  className="text-xs text-gray-600 hover:text-gray-400 mt-2 transition-all">
+                  Copy action
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

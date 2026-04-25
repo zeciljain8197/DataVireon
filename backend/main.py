@@ -367,3 +367,44 @@ async def get_file_contents(req: RepoFilesRequest):
         raise
     except Exception as e:
         raise HTTPException(500, str(e))
+
+class AdvisoryRequest(BaseModel):
+    codebase: str
+    role: str
+    problem: str
+    diagnostic: dict
+
+@app.post("/advisory")
+async def advisory(req: AdvisoryRequest):
+    skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
+
+    system_prompt = (
+        (skill_prompt + "\n\n") if skill_prompt else ""
+    ) + (
+        "You are DataVireon in advisory mode. Do NOT make code changes.\n"
+        "Provide a prioritised list of recommendations.\n"
+        "Return ONLY JSON:\n"
+        '{"recommendations":['
+        '{"priority":1,'
+        '"title":"short title",'
+        '"severity":"critical|high|medium|low",'
+        '"explanation":"detailed explanation",'
+        '"effort":"low|medium|high",'
+        '"action":"exact steps to fix this"}],'
+        '"summary":"overall assessment",'
+        '"quick_wins":["thing you can fix in 5 mins"]}'
+        "\nNo markdown. No text outside JSON. Include 3-6 recommendations."
+    )
+    user_prompt = (
+        "Role: " + req.role.replace("_", " ") + "\n"
+        "Problem: " + req.problem + "\n"
+        "Diagnostic: " + json.dumps(req.diagnostic) + "\n\n"
+        "Codebase:\n" + req.codebase[:6000]
+    )
+    return StreamingResponse(
+        ollama_stream([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ], temperature=0.2),
+        media_type="text/plain",
+    )
