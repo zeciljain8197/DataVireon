@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react"
 import { supabase, signInWithGitHub, signOut } from "@/lib/supabase"
 import type { User } from "@supabase/supabase-js"
+import Link from "next/link"
 
 export default function Navbar() {
   const [user, setUser] = useState<User | null>(null)
@@ -20,9 +21,10 @@ export default function Navbar() {
 
   return (
     <nav className="border-b border-gray-800 bg-gray-950 px-6 py-3 flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <span className="text-white font-semibold text-lg tracking-tight">DataVireon</span>
+      <div className="flex items-center gap-6">
+        <Link href="/" className="text-white font-semibold text-lg tracking-tight">DataVireon</Link>
         <span className="text-xs text-gray-500 border border-gray-700 px-2 py-0.5 rounded-full">beta</span>
+        <Link href="/history" className="text-sm text-gray-400 hover:text-gray-200 transition-all">History</Link>
       </div>
       <div className="flex items-center gap-3">
         {loading ? (
