@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Header
+from skills.prompts import get_skill, SKILLS
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -151,15 +152,14 @@ async def analyze(req: AnalyzeRequest):
     system_prompt = (
         "You are DataVireon, an expert AI assistant for "
         + req.role.replace("_", " ")
-        + " professionals. Your domain expertise covers: "
+        + " professionals.\n\n"
         + ROLE_CONTEXT.get(req.role, "general software engineering")
-        + ".\n\n"
-        "Analyze the provided codebase and problem. Return ONLY a JSON object:\n"
+        + "\n\nAnalyze the provided codebase and problem. Return ONLY a JSON object:\n"
         "{\"domain\":\"pipeline|schema_quality|performance|model_health|security|code_quality|environment|testing\","
         "\"severity\":\"critical|high|medium|low\","
         "\"confidence\":0.0_to_1.0,"
         "\"summary\":\"2-3 sentence plain English summary\","
-        "\"symptoms\":[\"symptom1\",\"symptom2\"],"
+        "\"symptoms\":[\"symptom1\",\"symptom2\",\"symptom3\"],"
         "\"affected_areas\":[\"area1\",\"area2\"],"
         "\"recommended_mode\":\"automatic|semi_auto|advisory\"}"
         "\nNo markdown. No text outside the JSON."
