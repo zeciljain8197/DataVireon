@@ -22,9 +22,12 @@ const SEVERITY_COLORS: Record<string,string> = {
 }
 
 export default function History() {
-  const [sessions, setSessions]   = useState<any[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [userId, setUserId]       = useState<string | null>(null)
+  const [sessions, setSessions]     = useState<any[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [userId, setUserId]         = useState<string | null>(null)
+  const [selected, setSelected]     = useState<any>(null)
+  const [steps, setSteps]           = useState<any[]>([])
+  const [stepsLoading, setStepsLoading] = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -36,6 +39,16 @@ export default function History() {
       setLoading(false)
     })
   }, [])
+
+  async function openSession(session: any) {
+    setSelected(session)
+    setStepsLoading(true)
+    setSteps([])
+    const res = await fetch(`http://localhost:8000/session/${session.id}/steps`)
+    const json = await res.json()
+    setSteps(json.steps || [])
+    setStepsLoading(false)
+  }
 
   if (loading) return (
     <main className="max-w-4xl mx-auto px-4 py-10">
@@ -52,6 +65,101 @@ export default function History() {
       <div className="text-center py-20">
         <p className="text-gray-400 mb-4">Sign in to view your session history</p>
         <Link href="/" className="text-indigo-400 hover:text-indigo-300 text-sm">← Back to home</Link>
+      </div>
+    </main>
+  )
+
+  if (selected) return (
+    <main className="max-w-4xl mx-auto px-4 py-10">
+      <button onClick={() => { setSelected(null); setSteps([]) }}
+        className="text-sm text-gray-500 hover:text-gray-300 mb-6 flex items-center gap-2 transition-all">
+        ← Back to history
+      </button>
+
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
+        <div className="flex items-center gap-3 mb-3">
+          {selected.domain && (
+            <span className={"text-xs px-2 py-0.5 rounded font-medium " + (DOMAIN_COLORS[selected.domain] || "bg-gray-800 text-gray-300")}>
+              {selected.domain.replace("_"," ")}
+            </span>
+          )}
+          {selected.diagnostic_report?.severity && (
+            <span className={"text-xs font-semibold uppercase " + (SEVERITY_COLORS[selected.diagnostic_report.severity] || "text-gray-400")}>
+              {selected.diagnostic_report.severity}
+            </span>
+          )}
+          <span className="text-xs text-gray-600 capitalize ml-auto">{selected.role?.replace("_"," ")}</span>
+        </div>
+        <p className="text-white font-medium mb-2">{selected.problem_statement}</p>
+        {selected.diagnostic_report?.summary && (
+          <p className="text-gray-400 text-sm leading-relaxed mb-4">{selected.diagnostic_report.summary}</p>
+        )}
+        {selected.diagnostic_report?.symptoms?.length > 0 && (
+          <div className="mb-4">
+            <p className="text-xs text-gray-600 uppercase tracking-widest mb-2">Symptoms</p>
+            <ul className="space-y-1">
+              {selected.diagnostic_report.symptoms.map((s: string, i: number) => (
+                <li key={i} className="text-sm text-gray-300 flex gap-2">
+                  <span className="text-indigo-400">—</span>{s}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div className="flex items-center gap-3 pt-3 border-t border-gray-800">
+          <span className="text-xs text-gray-600">
+            {new Date(selected.created_at).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+          </span>
+          <span className={"text-xs px-2 py-0.5 rounded ml-auto " + (selected.status === "completed" ? "bg-green-900 text-green-300" : "bg-gray-800 text-gray-400")}>
+            {selected.status}
+          </span>
+        </div>
+      </div>
+
+      <div>
+        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Resolution steps</p>
+        {stepsLoading ? (
+          <div className="space-y-2">
+            {[1,2].map(i => <div key={i} className="h-16 bg-gray-900 rounded-lg animate-pulse" />)}
+          </div>
+        ) : steps.length === 0 ? (
+          <div className="text-center py-10 border border-gray-800 rounded-xl">
+            <p className="text-gray-600 text-sm">No resolution steps recorded</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {steps.map((s: any, i: number) => (
+              <div key={i} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="text-xs text-gray-600">Step {s.step_number}</span>
+                  <span className={"text-xs font-medium px-2 py-0.5 rounded " + (
+                    s.user_decision === "approved" ? "bg-green-900 text-green-300" :
+                    s.user_decision === "rejected" ? "bg-gray-800 text-gray-400" :
+                    "bg-indigo-900 text-indigo-300"
+                  )}>
+                    {s.user_decision}
+                  </span>
+                </div>
+                <p className="text-gray-300 text-sm mb-3">{s.ai_explanation}</p>
+                {s.proposed_diff && (
+                  <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre-wrap">
+                    {s.proposed_diff}
+                  </pre>
+                )}
+                {s.override_prompt && (
+                  <p className="text-xs text-indigo-400 mt-2">Override: {s.override_prompt}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6">
+        <Link href="/"
+          className="w-full block text-center py-2.5 rounded-lg border border-gray-700 text-gray-400 hover:border-indigo-500 hover:text-indigo-400 text-sm font-medium transition-all">
+          Start new session →
+        </Link>
       </div>
     </main>
   )
@@ -77,7 +185,8 @@ export default function History() {
       ) : (
         <div className="space-y-3">
           {sessions.map((s: any) => (
-            <div key={s.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-all">
+            <button key={s.id} onClick={() => openSession(s)}
+              className="w-full bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-600 transition-all text-left">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-2">
@@ -107,7 +216,7 @@ export default function History() {
                   </span>
                 </div>
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}

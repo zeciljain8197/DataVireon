@@ -213,3 +213,11 @@ async def resolve_step(req: ResolveRequest):
         ], temperature=0.2),
         media_type="text/plain",
     )
+
+@app.get("/session/{session_id}/steps")
+def get_steps(session_id: str):
+    try:
+        result = supabase.table("resolution_steps").select("*").eq("session_id", session_id).order("step_number").execute()
+        return {"steps": result.data}
+    except Exception as e:
+        raise HTTPException(500, str(e))
