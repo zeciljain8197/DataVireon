@@ -42,6 +42,7 @@ export default function Home() {
   const [mode, setMode]               = useState("semi_auto")
   const [activeResult, setActiveResult] = useState<"semi"|"auto"|"advisory"|null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const [requestCount, setRequestCount] = useState(0)
   const [codebase, setCodebase]       = useState("")
   const [problem, setProblem]         = useState("")
   const [loading, setLoading]         = useState(false)
@@ -115,6 +116,7 @@ export default function Home() {
         setPrevSteps([])
         setStepNum(1)
         setRunbook("")
+        setRequestCount(c => c + 1)
         setDiagnostic(diag)
         if (userId) {
           const saved = await fetch(API + "/session/save", {
@@ -459,6 +461,15 @@ export default function Home() {
           </button>
         )}
       </div>
+
+      {requestCount > 0 && (
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <span className="text-xs text-gray-600">{requestCount} diagnostic{requestCount !== 1 ? "s" : ""} run this session</span>
+          <span className={"text-xs px-2 py-0.5 rounded " + (requestCount >= 8 ? "bg-orange-900 text-orange-300" : "bg-gray-800 text-gray-500")}>
+            {10 - requestCount > 0 ? `${10 - requestCount} remaining` : "limit reached"}
+          </span>
+        </div>
+      )}
 
       {loading && (
         <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">

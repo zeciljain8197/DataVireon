@@ -1,4 +1,7 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from skills.prompts import get_skill, SKILLS
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -10,6 +13,10 @@ import httpx, os, json
 load_dotenv()
 
 app = FastAPI(title="DataVireon API")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -90,6 +97,13 @@ class SaveStepRequest(BaseModel):
     user_decision: str
     override_prompt: str | None = None
 
+MAX_CODEBASE_SIZE = 50_000  # 50KB hard limit
+MAX_REQUESTS_PER_SESSION = 20  # max steps per session
+
+def guard_codebase(codebase: str):
+    if len(codebase) > MAX_CODEBASE_SIZE:
+        raise HTTPException(400, f"Codebase too large. Max {MAX_CODEBASE_SIZE//1000}KB allowed.")
+
 async def ollama_stream(messages: list, temperature: float = 0.1):
     async with httpx.AsyncClient(timeout=120) as client:
         async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json={
@@ -164,13 +178,15 @@ def get_sessions(user_id: str):
         raise HTTPException(500, str(e))
 
 @app.post("/analyze")
-async def analyze(req: AnalyzeRequest):
+@limiter.limit("10/minute")
+async def analyze(req: AnalyzeRequest, request: Request):
     # Try to get domain from problem text for early skill injection
     all_skills = " ".join([
         get_skill(req.role, d) for d in
         ["pipeline","schema_quality","performance","model_health","security","code_quality","environment","testing"]
         if get_skill(req.role, d)
     ])
+    guard_codebase(req.codebase)
     role_skill_context = all_skills[:2000] if all_skills else ROLE_CONTEXT.get(req.role, "")
 
     system_prompt = (
@@ -211,7 +227,8 @@ async def analyze(req: AnalyzeRequest):
     )
 
 @app.post("/resolve/step")
-async def resolve_step(req: ResolveRequest):
+@limiter.limit("20/minute")
+async def resolve_step(req: ResolveRequest, request: Request):
     steps_context = ""
     if req.previous_steps:
         steps_context = "\n\nPrevious steps:\n" + "\n".join(
@@ -391,7 +408,8 @@ class AdvisoryRequest(BaseModel):
     diagnostic: dict
 
 @app.post("/advisory")
-async def advisory(req: AdvisoryRequest):
+@limiter.limit("10/minute")
+async def advisory(req: AdvisoryRequest, request: Request):
     skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
 
     system_prompt = (
@@ -434,7 +452,8 @@ class AutoResolveRequest(BaseModel):
     session_id: str | None = None
 
 @app.post("/resolve/auto")
-async def resolve_auto(req: AutoResolveRequest):
+@limiter.limit("5/minute")
+async def resolve_auto(req: AutoResolveRequest, request: Request):
     skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
 
     system_prompt = (
