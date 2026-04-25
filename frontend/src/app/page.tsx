@@ -1,5 +1,5 @@
 "use client"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { supabase } from "@/lib/supabase"
 
 const ROLES = [
@@ -39,6 +39,8 @@ const API = "http://localhost:8000"
 export default function Home() {
   const [role, setRole]               = useState("")
   const [mode, setMode]               = useState("semi_auto")
+  const [activeResult, setActiveResult] = useState<"semi"|"auto"|"advisory"|null>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const [codebase, setCodebase]       = useState("")
   const [problem, setProblem]         = useState("")
   const [loading, setLoading]         = useState(false)
@@ -61,6 +63,8 @@ export default function Home() {
   const [showRepo, setShowRepo]         = useState(false)
   const [advisory, setAdvisory]         = useState<any>(null)
   const [advisoryLoading, setAdvisoryLoading] = useState(false)
+  const [autoResult, setAutoResult]     = useState<any>(null)
+  const [autoLoading, setAutoLoading]   = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -89,6 +93,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ codebase, role, problem, user_id: userId }),
+        signal: abortRef.current?.signal,
       })
       const reader = res.body!.getReader()
       const dec = new TextDecoder()
@@ -101,6 +106,14 @@ export default function Home() {
       const match = full.match(/\{[\s\S]*\}/)
       if (match) {
         const diag = JSON.parse(match[0])
+        setRawStream("")
+        setActiveResult(null)
+        setStep(null)
+        setAutoResult(null)
+        setAdvisory(null)
+        setPrevSteps([])
+        setStepNum(1)
+        setRunbook("")
         setDiagnostic(diag)
         if (userId) {
           const saved = await fetch(API + "/session/save", {
@@ -154,7 +167,10 @@ export default function Home() {
         setRawStream(full)
       }
       const match = full.match(/\{[\s\S]*\}/)
-      if (match) setStep(JSON.parse(match[0]))
+      if (match) {
+        setStep(JSON.parse(match[0]))
+        setActiveResult("semi")
+      }
     } catch(e) { console.error(e) }
     setStepLoading(false)
     setOverride("")
@@ -196,6 +212,65 @@ export default function Home() {
     setRawStream("")
   }
 
+  function resetAll() {
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+    setLoading(false)
+    setStepLoading(false)
+    setAutoLoading(false)
+    setAdvisoryLoading(false)
+    setRunbookLoading(false)
+    setDiagnostic(null)
+    setStep(null)
+    setAutoResult(null)
+    setAdvisory(null)
+    setPrevSteps([])
+    setStepNum(1)
+    setOverride("")
+    setRunbook("")
+    setRawStream("")
+    setSessionId(null)
+    setActiveResult(null)
+    setCodebase("")
+    setProblem("")
+    setRole("")
+  }
+
+  async function runAuto() {
+    setAutoLoading(true)
+    setAutoResult(null)
+    let full = ""
+    try {
+      const res = await fetch("http://localhost:8000/resolve/auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          codebase, role, problem,
+          diagnostic,
+          user_id: userId,
+          session_id: sessionId,
+        }),
+      })
+      const reader = res.body!.getReader()
+      const dec = new TextDecoder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        full += dec.decode(value)
+        setRawStream(full)
+      }
+      const match = full.match(/\{[\s\S]*\}/)
+      if (match) {
+        setAutoResult(JSON.parse(match[0]))
+        setActiveResult("auto")
+      }
+    } catch(e) { console.error(e) }
+    setAutoLoading(false)
+    setRawStream("")
+  }
+
   async function runAdvisory() {
     setAdvisoryLoading(true)
     setAdvisory(null)
@@ -214,7 +289,10 @@ export default function Home() {
         full += dec.decode(value)
       }
       const match = full.match(/\{[\s\S]*\}/)
-      if (match) setAdvisory(JSON.parse(match[0]))
+      if (match) {
+        setAdvisory(JSON.parse(match[0]))
+        setActiveResult("advisory")
+      }
     } catch(e) { console.error(e) }
     setAdvisoryLoading(false)
   }
@@ -366,29 +444,32 @@ export default function Home() {
           className="w-full bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none" />
       </section>
 
-      <section className="mb-8">
-        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Resolution mode</p>
-        <div className="grid grid-cols-3 gap-2">
-          {MODES.map(m => (
-            <button key={m.id} onClick={() => setMode(m.id)}
-              className={"p-3 rounded-lg border text-left transition-all " + (mode === m.id
-                ? "border-indigo-500 bg-indigo-950 text-white"
-                : "border-gray-800 bg-gray-900 text-gray-400 hover:border-gray-600")}>
-              <div className="text-sm font-medium">{m.label}</div>
-              <div className="text-xs mt-0.5 opacity-60">{m.desc}</div>
-            </button>
-          ))}
-        </div>
-      </section>
+      <div className="flex gap-2">
+        <button onClick={runDiagnostic} disabled={!role || !codebase || !problem || loading}
+          className="flex-1 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-all text-sm">
+          {loading ? "Analyzing..." : "Run diagnostic"}
+        </button>
+        {(loading || stepLoading || autoLoading || advisoryLoading || diagnostic) && (
+          <button onClick={resetAll}
+            className="px-4 py-3 rounded-lg border border-gray-700 text-gray-400 hover:border-red-700 hover:text-red-400 transition-all text-sm font-medium whitespace-nowrap">
+            {(loading || stepLoading || autoLoading || advisoryLoading) ? "✕ Cancel" : "↺ Reset"}
+          </button>
+        )}
+      </div>
 
-      <button onClick={runDiagnostic} disabled={!role || !codebase || !problem || loading}
-        className="w-full py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-all text-sm">
-        {loading ? "Analyzing..." : "Run diagnostic"}
-      </button>
-
-      {(loading || stepLoading) && rawStream && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4 font-mono text-xs text-gray-400 whitespace-pre-wrap">
-          {rawStream}
+      {loading && (
+        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
+            <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse delay-75" />
+            <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse delay-150" />
+            <span className="text-sm text-gray-400 ml-1">Analyzing your codebase...</span>
+          </div>
+          <div className="space-y-2">
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-3/4" />
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-1/2" />
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-2/3" />
+          </div>
         </div>
       )}
 
@@ -427,17 +508,83 @@ export default function Home() {
           {sessionId && (
             <p className="text-xs text-gray-600 mb-4">Session saved — ID: {sessionId.slice(0,8)}...</p>
           )}
-          {mode === "advisory" ? (
-            <button onClick={runAdvisory} disabled={advisoryLoading}
-              className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
-              {advisoryLoading ? "Generating recommendations..." : "Get recommendations →"}
-            </button>
-          ) : (
-            <button onClick={() => runStep()} disabled={stepLoading}
-              className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
-              {stepLoading ? "Generating fix..." : "Start resolution →"}
-            </button>
-          )}
+
+          <div className="border-t border-gray-800 pt-5 mt-2">
+            <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">How do you want to resolve this?</p>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              {[
+                { id: "automatic", label: "Fully automatic", desc: "AI applies all fixes" },
+                { id: "semi_auto", label: "Semi-automatic",  desc: "Step checkpoints, you choose" },
+                { id: "advisory",  label: "Advisory only",   desc: "Recommendations, you act" },
+              ].map(m => (
+                <button key={m.id} onClick={() => {
+                  if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
+                  setMode(m.id)
+                  setActiveResult(null)
+                  setStep(null)
+                  setAutoResult(null)
+                  setAdvisory(null)
+                  setPrevSteps([])
+                  setStepNum(1)
+                  setRunbook("")
+                  setStepLoading(false)
+                  setAutoLoading(false)
+                  setAdvisoryLoading(false)
+                }}
+                  className={"p-3 rounded-lg border text-left transition-all " + (mode === m.id
+                    ? "border-indigo-500 bg-indigo-950 text-white"
+                    : "border-gray-800 bg-gray-900 text-gray-400 hover:border-gray-600")}>
+                  <div className="text-sm font-medium">{m.label}</div>
+                  <div className="text-xs mt-0.5 opacity-60">{m.desc}</div>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-600 mb-4">
+              {mode === "advisory"
+                ? "Receive a prioritised list of recommendations with severity, effort, and exact action steps. No code will be changed."
+                : mode === "automatic"
+                ? "AI applies every fix at once and returns a fully patched codebase ready to copy."
+                : "Walk through fixes one step at a time. Approve, reject, or override each change before moving to the next."}
+            </p>
+            <div className="flex gap-2">
+              {mode === "advisory" ? (
+                <button onClick={runAdvisory} disabled={advisoryLoading}
+                  className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
+                  {advisoryLoading ? "Generating recommendations..." : "Get recommendations →"}
+                </button>
+              ) : mode === "automatic" ? (
+                <button onClick={runAuto} disabled={autoLoading}
+                  className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
+                  {autoLoading ? "Applying all fixes..." : "Apply all fixes automatically →"}
+                </button>
+              ) : (
+                <button onClick={() => runStep()} disabled={stepLoading}
+                  className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
+                  {stepLoading ? "Generating fix..." : "Start resolution →"}
+                </button>
+              )}
+              {(advisoryLoading || autoLoading || stepLoading || activeResult) && (
+                <button onClick={() => {
+                  if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
+                  setStepLoading(false)
+                  setAutoLoading(false)
+                  setAdvisoryLoading(false)
+                  if (activeResult) {
+                    setActiveResult(null)
+                    setStep(null)
+                    setAutoResult(null)
+                    setAdvisory(null)
+                    setPrevSteps([])
+                    setStepNum(1)
+                    setRunbook("")
+                  }
+                }}
+                  className="px-4 py-2.5 rounded-lg border border-gray-700 text-gray-400 hover:border-red-700 hover:text-red-400 transition-all text-sm font-medium whitespace-nowrap">
+                  {(advisoryLoading || autoLoading || stepLoading) ? "✕ Cancel" : "↺ Clear"}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -447,7 +594,7 @@ export default function Home() {
         </div>
       )}
 
-      {advisory && !advisoryLoading && (
+      {advisory && !advisoryLoading && activeResult === "advisory" && (
         <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
           <p className="text-xs uppercase tracking-widest text-gray-500 mb-2">Advisory report</p>
           <p className="text-gray-300 text-sm leading-relaxed mb-6">{advisory.summary}</p>
@@ -493,7 +640,96 @@ export default function Home() {
         </div>
       )}
 
-      {step && !stepLoading && (
+      {autoLoading && (
+        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse delay-75" />
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse delay-150" />
+            <span className="text-sm text-gray-400 ml-1">Applying all fixes automatically...</span>
+          </div>
+          <div className="space-y-2">
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-full" />
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-4/5" />
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-2/3" />
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-3/4" />
+          </div>
+        </div>
+      )}
+
+      {autoResult && !autoLoading && activeResult === "auto" && (
+        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <p className="text-xs uppercase tracking-widest text-gray-500 mb-2">Automatic fix applied</p>
+          <p className="text-gray-300 text-sm leading-relaxed mb-6">{autoResult.summary}</p>
+
+          {autoResult.warnings?.length > 0 && (
+            <div className="mb-6 bg-yellow-950 border border-yellow-900 rounded-lg p-4">
+              <p className="text-xs text-yellow-400 uppercase tracking-widest mb-2">Verify these</p>
+              <ul className="space-y-1">
+                {autoResult.warnings.map((w: string, i: number) => (
+                  <li key={i} className="text-sm text-yellow-300 flex gap-2"><span>⚠</span>{w}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {autoResult.fixes?.map((f: any, i: number) => (
+            <div key={i} className="mb-4 border border-gray-800 rounded-xl p-4">
+              <p className="text-white text-sm font-medium mb-2">{f.title}</p>
+              <p className="text-gray-400 text-sm mb-3">{f.explanation}</p>
+              {f.fixed && (
+                <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre-wrap">
+                  {f.fixed}
+                </pre>
+              )}
+            </div>
+          ))}
+
+          {autoResult.patched_codebase && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs text-gray-500 uppercase tracking-widest">Patched codebase</p>
+                <button onClick={() => navigator.clipboard.writeText(autoResult.patched_codebase)}
+                  className="text-xs text-gray-500 hover:text-gray-300 transition-all">
+                  Copy all
+                </button>
+              </div>
+              <pre className="bg-gray-950 border border-gray-800 rounded-lg p-4 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre-wrap max-h-96">
+                {autoResult.patched_codebase}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+
+      {stepLoading && (
+        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <div className="flex items-center gap-3 mb-5">
+            <div className="flex gap-1">
+              <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{animationDelay:"0ms"}} />
+              <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{animationDelay:"150ms"}} />
+              <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{animationDelay:"300ms"}} />
+            </div>
+            <span className="text-sm text-gray-300 font-medium">Generating fix for step {stepNum}...</span>
+          </div>
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="w-4 h-4 rounded-full border-2 border-purple-500 border-t-transparent animate-spin flex-shrink-0" />
+              <div className="h-3 bg-gray-800 rounded animate-pulse flex-1" />
+            </div>
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-4/5 ml-7" />
+            <div className="h-3 bg-gray-800 rounded animate-pulse w-3/5 ml-7" />
+            <div className="h-24 bg-gray-800 rounded animate-pulse w-full mt-2" />
+            <div className="flex gap-2 mt-4">
+              <div className="h-9 bg-gray-800 rounded-lg animate-pulse flex-1" />
+              <div className="h-9 bg-gray-800 rounded-lg animate-pulse flex-1" />
+              <div className="h-9 bg-gray-800 rounded-lg animate-pulse flex-1" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {step && !stepLoading && activeResult === "semi" && (
         <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs text-gray-500">Step {stepNum}</span>
@@ -526,7 +762,7 @@ export default function Home() {
         </div>
       )}
 
-      {prevSteps.length > 0 && (
+      {prevSteps.length > 0 && activeResult === "semi" && (
         <div className="mt-6 mb-10">
           <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Resolution trail</p>
           <div className="space-y-2">

@@ -27,6 +27,22 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY or SUPABASE_KEY)
 
+def trim_codebase(code: str, max_chars: int = 4000) -> str:
+    """Trim codebase intelligently — keep imports and function signatures."""
+    if len(code) <= max_chars:
+        return code
+    lines = code.split("\n")
+    # Always keep first 20 lines (imports) and last 20 lines
+    head = lines[:20]
+    tail = lines[-20:]
+    middle = lines[20:-20]
+    # Sample middle evenly
+    if middle:
+        step = max(1, len(middle) // 20)
+        middle = middle[::step][:20]
+    trimmed = "\n".join(head + ["# ... (trimmed for context) ..."] + middle + tail)
+    return trimmed[:max_chars]
+
 ROLE_CONTEXT = {
     "data_engineer":  "data pipelines, ETL/ELT, orchestration (Airflow/Prefect/dbt), Spark, data quality, schema design",
     "sde":            "software architecture, APIs, system design, performance, code quality, testing, CI/CD",
@@ -184,7 +200,7 @@ async def analyze(req: AnalyzeRequest):
     user_prompt = (
         "Role: " + req.role.replace("_", " ") + "\n"
         "Problem: " + req.problem + "\n\n"
-        "Codebase:\n" + req.codebase[:8000]
+        "Codebase:\n" + trim_codebase(req.codebase, 4000)
     )
     return StreamingResponse(
         ollama_stream([
@@ -220,7 +236,7 @@ async def resolve_step(req: ResolveRequest):
         "Diagnostic: " + req.diagnostic + "\n"
         "Step number: " + str(req.step_number)
         + steps_context + override + "\n\n"
-        "Codebase:\n" + req.codebase[:6000] + "\n\n"
+        "Codebase:\n" + trim_codebase(req.codebase, 3000) + "\n\n"
         "Provide step " + str(req.step_number) + " of the fix."
     )
     return StreamingResponse(
@@ -399,12 +415,56 @@ async def advisory(req: AdvisoryRequest):
         "Role: " + req.role.replace("_", " ") + "\n"
         "Problem: " + req.problem + "\n"
         "Diagnostic: " + json.dumps(req.diagnostic) + "\n\n"
-        "Codebase:\n" + req.codebase[:6000]
+        "Codebase:\n" + trim_codebase(req.codebase, 4000)
     )
     return StreamingResponse(
         ollama_stream([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ], temperature=0.2),
+        media_type="text/plain",
+    )
+
+class AutoResolveRequest(BaseModel):
+    codebase: str
+    role: str
+    problem: str
+    diagnostic: dict
+    user_id: str | None = None
+    session_id: str | None = None
+
+@app.post("/resolve/auto")
+async def resolve_auto(req: AutoResolveRequest):
+    skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
+
+    system_prompt = (
+        (skill_prompt + "\n\n") if skill_prompt else ""
+    ) + (
+        "You are DataVireon in fully automatic resolution mode.\n"
+        "Analyze the codebase and apply ALL necessary fixes at once.\n"
+        "Return ONLY JSON:\n"
+        '{"fixes":['
+        '{"title":"fix title",'
+        '"explanation":"what was wrong and why this fixes it",'
+        '"original":"original code snippet",'
+        '"fixed":"corrected code snippet",'
+        '"language":"python|sql|yaml|etc"}],'
+        '"summary":"overall summary of all changes made",'
+        '"patched_codebase":"the complete fixed codebase",'
+        '"warnings":["any caveats or things to verify"]}'
+        "\nNo markdown. No text outside JSON."
+    )
+    user_prompt = (
+        "Role: " + req.role.replace("_", " ") + "\n"
+        "Problem: " + req.problem + "\n"
+        "Diagnostic: " + json.dumps(req.diagnostic) + "\n\n"
+        "Codebase:\n" + trim_codebase(req.codebase, 3000) + "\n\n"
+        "Apply all necessary fixes and return the complete patched codebase."
+    )
+    return StreamingResponse(
+        ollama_stream([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ], temperature=0.1),
         media_type="text/plain",
     )
