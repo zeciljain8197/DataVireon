@@ -149,12 +149,29 @@ def get_sessions(user_id: str):
 
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest):
+    # Try to get domain from problem text for early skill injection
+    all_skills = " ".join([
+        get_skill(req.role, d) for d in
+        ["pipeline","schema_quality","performance","model_health","security","code_quality","environment","testing"]
+        if get_skill(req.role, d)
+    ])
+    role_skill_context = all_skills[:2000] if all_skills else ROLE_CONTEXT.get(req.role, "")
+
     system_prompt = (
         "You are DataVireon, an expert AI assistant for "
         + req.role.replace("_", " ")
         + " professionals.\n\n"
-        + ROLE_CONTEXT.get(req.role, "general software engineering")
-        + "\n\nAnalyze the provided codebase and problem. Return ONLY a JSON object:\n"
+        + role_skill_context
+        + "\n\nDomain classification guide:\n"
+        "- pipeline: DAG failures, ETL errors, orchestration, task dependencies\n"
+        "- schema_quality: data drift, nulls, type mismatches, duplicates, validation\n"
+        "- performance: slow queries, memory, compute cost, shuffle, joins\n"
+        "- model_health: model degradation, drift, training/serving skew, bias, leakage\n"
+        "- security: credentials, PII, access control, encryption, compliance\n"
+        "- code_quality: complexity, anti-patterns, type hints, error handling\n"
+        "- environment: dependencies, Docker, infra, config, secrets\n"
+        "- testing: coverage, flaky tests, CI/CD, missing tests\n\n"
+        "Analyze the provided codebase and problem. Return ONLY a JSON object:\n"
         "{\"domain\":\"pipeline|schema_quality|performance|model_health|security|code_quality|environment|testing\","
         "\"severity\":\"critical|high|medium|low\","
         "\"confidence\":0.0_to_1.0,"
