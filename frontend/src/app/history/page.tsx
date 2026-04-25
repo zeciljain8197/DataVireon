@@ -1,4 +1,5 @@
 "use client"
+import Navbar from "@/components/Navbar"
 import { useState, useEffect } from "react"
 import { supabase } from "@/lib/supabase"
 import Link from "next/link"
@@ -51,6 +52,8 @@ export default function History() {
   }
 
   if (loading) return (
+    <>
+    <Navbar />
     <main className="max-w-4xl mx-auto px-4 py-10">
       <div className="space-y-3">
         {[1,2,3].map(i => (
@@ -58,18 +61,24 @@ export default function History() {
         ))}
       </div>
     </main>
+    </>
   )
 
   if (!userId) return (
+    <>
+    <Navbar />
     <main className="max-w-4xl mx-auto px-4 py-10">
       <div className="text-center py-20">
         <p className="text-gray-400 mb-4">Sign in to view your session history</p>
-        <Link href="/" className="text-indigo-400 hover:text-indigo-300 text-sm">← Back to home</Link>
+        <Link href="/app" className="text-indigo-400 hover:text-indigo-300 text-sm">← Back to home</Link>
       </div>
     </main>
+    </>
   )
 
   if (selected) return (
+    <>
+    <Navbar />
     <main className="max-w-4xl mx-auto px-4 py-10">
       <button onClick={() => { setSelected(null); setSteps([]) }}
         className="text-sm text-gray-500 hover:text-gray-300 mb-6 flex items-center gap-2 transition-all">
@@ -156,22 +165,25 @@ export default function History() {
       </div>
 
       <div className="mt-6">
-        <Link href="/"
+        <Link href="/app"
           className="w-full block text-center py-2.5 rounded-lg border border-gray-700 text-gray-400 hover:border-indigo-500 hover:text-indigo-400 text-sm font-medium transition-all">
           Start new session →
         </Link>
       </div>
     </main>
+    </>
   )
 
   return (
+    <>
+    <Navbar />
     <main className="max-w-4xl mx-auto px-4 py-10">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold text-white">Session history</h1>
           <p className="text-gray-500 text-sm mt-1">{sessions.length} sessions saved</p>
         </div>
-        <Link href="/"
+        <Link href="/app"
           className="text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200 transition-all">
           + New session
         </Link>
@@ -180,7 +192,7 @@ export default function History() {
       {sessions.length === 0 ? (
         <div className="text-center py-20 border border-gray-800 rounded-xl">
           <p className="text-gray-500 mb-4">No sessions yet</p>
-          <Link href="/" className="text-indigo-400 hover:text-indigo-300 text-sm">Start your first diagnostic →</Link>
+          <Link href="/app" className="text-indigo-400 hover:text-indigo-300 text-sm">Start your first diagnostic →</Link>
         </div>
       ) : (
         <div className="space-y-3">
@@ -221,5 +233,6 @@ export default function History() {
         </div>
       )}
     </main>
+    </>
   )
 }

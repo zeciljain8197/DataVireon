@@ -1,783 +1,270 @@
 "use client"
-import { useState, useEffect, useRef } from "react"
-import { supabase } from "@/lib/supabase"
+import Link from "next/link"
+import { useState, useEffect } from "react"
+import { supabase, signInWithGitHub } from "@/lib/supabase"
 
 const ROLES = [
-  { id: "data_engineer",  label: "Data Engineer",  desc: "Pipelines, ETL, orchestration" },
-  { id: "sde",            label: "SDE",             desc: "APIs, architecture, code quality" },
-  { id: "data_analyst",   label: "Data Analyst",    desc: "SQL, BI, reporting" },
-  { id: "mle",            label: "MLE",             desc: "ML pipelines, model health" },
-  { id: "data_scientist", label: "Data Scientist",  desc: "Stats, experimentation, EDA" },
+  { id: "data_engineer",  label: "Data Engineer",  color: "text-blue-400",   bg: "bg-blue-900/30 border-blue-800" },
+  { id: "sde",            label: "SDE",             color: "text-purple-400", bg: "bg-purple-900/30 border-purple-800" },
+  { id: "data_analyst",   label: "Data Analyst",    color: "text-teal-400",   bg: "bg-teal-900/30 border-teal-800" },
+  { id: "mle",            label: "MLE",             color: "text-pink-400",   bg: "bg-pink-900/30 border-pink-800" },
+  { id: "data_scientist", label: "Data Scientist",  color: "text-amber-400",  bg: "bg-amber-900/30 border-amber-800" },
 ]
 
-const MODES = [
-  { id: "automatic", label: "Fully automatic", desc: "AI applies all fixes end-to-end" },
-  { id: "semi_auto", label: "Semi-automatic",  desc: "Step checkpoints, you choose" },
-  { id: "advisory",  label: "Advisory only",   desc: "Recommendations, you act" },
+const FEATURES = [
+  {
+    icon: "⚡",
+    title: "Role-aware diagnosis",
+    desc: "DataVireon understands your exact role. A Data Engineer gets pipeline and schema analysis. An MLE gets model drift and serving skew detection. Same codebase, completely different lens."
+  },
+  {
+    icon: "🔬",
+    title: "40 expert skill modules",
+    desc: "Every role x domain combination has a deeply engineered expert prompt — from Airflow DAG failures to CUDA memory issues to SQL cartesian joins. Not generic AI advice."
+  },
+  {
+    icon: "🔀",
+    title: "Three resolution modes",
+    desc: "Let AI fix everything automatically, walk through changes step by step with full approval control, or get a prioritised advisory report with no code changes."
+  },
+  {
+    icon: "🐙",
+    title: "GitHub repo integration",
+    desc: "Connect any GitHub repo and browse files directly. Select the files you want analyzed — no copy-pasting entire codebases."
+  },
+  {
+    icon: "📋",
+    title: "Incident runbooks",
+    desc: "Every resolved session generates a production-ready incident runbook in markdown. Ready to paste into Notion, Confluence, or your internal wiki."
+  },
+  {
+    icon: "🕓",
+    title: "Session history",
+    desc: "Every diagnostic and resolution step is saved. Resume where you left off, review past fixes, or share sessions with your team."
+  },
 ]
 
-const DOMAIN_COLORS: Record<string,string> = {
-  pipeline:       "bg-blue-900 text-blue-200",
-  schema_quality: "bg-purple-900 text-purple-200",
-  performance:    "bg-orange-900 text-orange-200",
-  model_health:   "bg-pink-900 text-pink-200",
-  security:       "bg-red-900 text-red-200",
-  code_quality:   "bg-green-900 text-green-200",
-  environment:    "bg-yellow-900 text-yellow-200",
-  testing:        "bg-teal-900 text-teal-200",
-}
+const DOMAINS = [
+  { label: "Pipeline debugger",    color: "bg-blue-900 text-blue-200" },
+  { label: "Schema & quality",     color: "bg-purple-900 text-purple-200" },
+  { label: "Performance & cost",   color: "bg-orange-900 text-orange-200" },
+  { label: "Model health",         color: "bg-pink-900 text-pink-200" },
+  { label: "Security & compliance",color: "bg-red-900 text-red-200" },
+  { label: "Code quality",         color: "bg-green-900 text-green-200" },
+  { label: "Env & infra",          color: "bg-yellow-900 text-yellow-200" },
+  { label: "Testing & CI/CD",      color: "bg-teal-900 text-teal-200" },
+]
 
-const SEVERITY_COLORS: Record<string,string> = {
-  critical: "text-red-400",
-  high:     "text-orange-400",
-  medium:   "text-yellow-400",
-  low:      "text-green-400",
-}
+const STEPS = [
+  { num: "01", title: "Select your role", desc: "Tell DataVireon whether you are a Data Engineer, SDE, MLE, Data Analyst, or Data Scientist. Everything adapts to your context." },
+  { num: "02", title: "Add your code", desc: "Paste a snippet, upload files, or connect your GitHub repo and browse files directly." },
+  { num: "03", title: "Describe the problem", desc: "Explain what is going wrong. Include error messages, symptoms, or just describe the unexpected behavior." },
+  { num: "04", title: "Run diagnostic", desc: "DataVireon analyzes your code through the lens of your role, classifies the problem domain, and generates a structured diagnostic report." },
+  { num: "05", title: "Choose your resolution mode", desc: "Automatic, semi-automatic with step approval, or advisory recommendations only. You decide how much control you want." },
+  { num: "06", title: "Get your fix", desc: "Receive patched code, a step-by-step resolution trail, and a production-ready incident runbook. All saved to your session history." },
+]
 
-const API = "http://localhost:8000"
-
-export default function Home() {
-  const [role, setRole]               = useState("")
-  const [mode, setMode]               = useState("semi_auto")
-  const [activeResult, setActiveResult] = useState<"semi"|"auto"|"advisory"|null>(null)
-  const abortRef = useRef<AbortController | null>(null)
-  const [codebase, setCodebase]       = useState("")
-  const [problem, setProblem]         = useState("")
-  const [loading, setLoading]         = useState(false)
-  const [diagnostic, setDiagnostic]   = useState<any>(null)
-  const [rawStream, setRawStream]     = useState("")
-  const [step, setStep]               = useState<any>(null)
-  const [stepNum, setStepNum]         = useState(1)
-  const [prevSteps, setPrevSteps]     = useState<any[]>([])
-  const [override, setOverride]       = useState("")
-  const [stepLoading, setStepLoading] = useState(false)
-  const [userId, setUserId]           = useState<string | null>(null)
-  const [sessionId, setSessionId]     = useState<string | null>(null)
-  const [runbook, setRunbook]           = useState("")
-  const [runbookLoading, setRunbookLoading] = useState(false)
-  const [repoUrl, setRepoUrl]           = useState("")
-  const [repoFiles, setRepoFiles]       = useState<any[]>([])
-  const [repoLoading, setRepoLoading]   = useState(false)
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
-  const [repoOwner, setRepoOwner]       = useState("")
-  const [showRepo, setShowRepo]         = useState(false)
-  const [advisory, setAdvisory]         = useState<any>(null)
-  const [advisoryLoading, setAdvisoryLoading] = useState(false)
-  const [autoResult, setAutoResult]     = useState<any>(null)
-  const [autoLoading, setAutoLoading]   = useState(false)
+export default function Landing() {
+  const [activeRole, setActiveRole] = useState(0)
+  const [user, setUser] = useState<any>(null)
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      setUserId(data.user?.id ?? null)
-      console.log("Auth user ID:", data.user?.id)
-    })
+    const interval = setInterval(() => {
+      setActiveRole(r => (r + 1) % ROLES.length)
+    }, 2000)
+    supabase.auth.getUser().then(({ data }) => setUser(data.user))
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUserId(session?.user?.id ?? null)
-      console.log("Auth state changed, user ID:", session?.user?.id)
+      setUser(session?.user ?? null)
     })
-    return () => subscription.unsubscribe()
+    return () => { clearInterval(interval); subscription.unsubscribe() }
   }, [])
 
-  async function runDiagnostic() {
-    if (!role || !codebase.trim() || !problem.trim()) return
-    setLoading(true)
-    setRawStream("")
-    setDiagnostic(null)
-    setStep(null)
-    setPrevSteps([])
-    setStepNum(1)
-    setSessionId(null)
-    let full = ""
-    try {
-      const res = await fetch(API + "/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codebase, role, problem, user_id: userId }),
-        signal: abortRef.current?.signal,
-      })
-      const reader = res.body!.getReader()
-      const dec = new TextDecoder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        full += dec.decode(value)
-        setRawStream(full)
-      }
-      const match = full.match(/\{[\s\S]*\}/)
-      if (match) {
-        const diag = JSON.parse(match[0])
-        setRawStream("")
-        setActiveResult(null)
-        setStep(null)
-        setAutoResult(null)
-        setAdvisory(null)
-        setPrevSteps([])
-        setStepNum(1)
-        setRunbook("")
-        setDiagnostic(diag)
-        if (userId) {
-          const saved = await fetch(API + "/session/save", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              user_id: userId,
-              role,
-              problem,
-              domain: diag.domain,
-              resolution_mode: mode,
-              diagnostic_report: diag,
-            }),
-          })
-          const savedData = await saved.json()
-          setSessionId(savedData.session_id)
-        }
-      }
-    } catch(e) { console.error(e) }
-    setLoading(false)
-  }
-
-  async function runStep(currentNum?: number, currentPrev?: any[]) {
-    setStepLoading(true)
-    setStep(null)
-    setRawStream("")
-    const num  = currentNum  ?? stepNum
-    const prev = currentPrev ?? prevSteps
-    let full = ""
-    try {
-      const res = await fetch(API + "/resolve/step", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId ?? "local-session",
-          codebase, role, problem,
-          diagnostic: JSON.stringify(diagnostic),
-          mode,
-          step_number: num,
-          previous_steps: prev,
-          override_prompt: override || null,
-          user_id: userId,
-        }),
-      })
-      const reader = res.body!.getReader()
-      const dec = new TextDecoder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        full += dec.decode(value)
-        setRawStream(full)
-      }
-      const match = full.match(/\{[\s\S]*\}/)
-      if (match) {
-        setStep(JSON.parse(match[0]))
-        setActiveResult("semi")
-      }
-    } catch(e) { console.error(e) }
-    setStepLoading(false)
-    setOverride("")
-  }
-
-  async function saveStep(decision: string, currentStep: any, num: number) {
-    if (!sessionId || !currentStep) return
-    await fetch(API + "/session/step/save", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: sessionId,
-        step_number: num,
-        ai_explanation: currentStep.explanation,
-        proposed_diff: currentStep.diff,
-        user_decision: decision,
-        override_prompt: override || null,
-      }),
-    })
-  }
-
-  function approveStep() {
-    if (!step) return
-    saveStep("approved", step, stepNum)
-    const newPrev = [...prevSteps, { step_number: stepNum, explanation: step.explanation, decision: "approved" }]
-    setPrevSteps(newPrev)
-    const newNum = stepNum + 1
-    setStepNum(newNum)
-    setStep(null)
-    if (!step.is_final) runStep(newNum, newPrev)
-  }
-
-  function rejectStep() {
-    if (!step) return
-    saveStep("rejected", step, stepNum)
-    const newPrev = [...prevSteps, { step_number: stepNum, explanation: step.explanation, decision: "rejected" }]
-    setPrevSteps(newPrev)
-    setStep(null)
-    setRawStream("")
-  }
-
-  function resetAll() {
-    if (abortRef.current) {
-      abortRef.current.abort()
-      abortRef.current = null
-    }
-    setLoading(false)
-    setStepLoading(false)
-    setAutoLoading(false)
-    setAdvisoryLoading(false)
-    setRunbookLoading(false)
-    setDiagnostic(null)
-    setStep(null)
-    setAutoResult(null)
-    setAdvisory(null)
-    setPrevSteps([])
-    setStepNum(1)
-    setOverride("")
-    setRunbook("")
-    setRawStream("")
-    setSessionId(null)
-    setActiveResult(null)
-    setCodebase("")
-    setProblem("")
-    setRole("")
-  }
-
-  async function runAuto() {
-    setAutoLoading(true)
-    setAutoResult(null)
-    let full = ""
-    try {
-      const res = await fetch("http://localhost:8000/resolve/auto", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          codebase, role, problem,
-          diagnostic,
-          user_id: userId,
-          session_id: sessionId,
-        }),
-      })
-      const reader = res.body!.getReader()
-      const dec = new TextDecoder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        full += dec.decode(value)
-        setRawStream(full)
-      }
-      const match = full.match(/\{[\s\S]*\}/)
-      if (match) {
-        setAutoResult(JSON.parse(match[0]))
-        setActiveResult("auto")
-      }
-    } catch(e) { console.error(e) }
-    setAutoLoading(false)
-    setRawStream("")
-  }
-
-  async function runAdvisory() {
-    setAdvisoryLoading(true)
-    setAdvisory(null)
-    let full = ""
-    try {
-      const res = await fetch("http://localhost:8000/advisory", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codebase, role, problem, diagnostic }),
-      })
-      const reader = res.body!.getReader()
-      const dec = new TextDecoder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        full += dec.decode(value)
-      }
-      const match = full.match(/\{[\s\S]*\}/)
-      if (match) {
-        setAdvisory(JSON.parse(match[0]))
-        setActiveResult("advisory")
-      }
-    } catch(e) { console.error(e) }
-    setAdvisoryLoading(false)
-  }
-
-  async function fetchRepo() {
-    if (!repoUrl.trim()) return
-    setRepoLoading(true)
-    setRepoFiles([])
-    setSelectedFiles([])
-    try {
-      const res = await fetch("http://localhost:8000/github/tree", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_url: repoUrl }),
-      })
-      const data = await res.json()
-      if (data.files) {
-        setRepoFiles(data.files)
-        setRepoOwner(data.owner + "/" + data.repo)
-      }
-    } catch(e) { console.error(e) }
-    setRepoLoading(false)
-  }
-
-  async function loadSelectedFiles() {
-    if (!selectedFiles.length) return
-    setRepoLoading(true)
-    try {
-      const res = await fetch("http://localhost:8000/github/contents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_url: repoUrl, file_paths: selectedFiles }),
-      })
-      const data = await res.json()
-      if (data.combined) {
-        setCodebase(data.combined)
-        setShowRepo(false)
-      }
-    } catch(e) { console.error(e) }
-    setRepoLoading(false)
-  }
-
-  function toggleFile(path: string) {
-    setSelectedFiles(prev =>
-      prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]
-    )
-  }
-
-  async function generateRunbook() {
-    setRunbookLoading(true)
-    setRunbook("")
-    let full = ""
-    try {
-      const res = await fetch("http://localhost:8000/runbook", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, problem, diagnostic, steps: prevSteps }),
-      })
-      const reader = res.body!.getReader()
-      const dec = new TextDecoder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        full += dec.decode(value)
-        setRunbook(full)
-      }
-    } catch(e) { console.error(e) }
-    setRunbookLoading(false)
-  }
-
-
   return (
-    <main className="max-w-4xl mx-auto px-4 py-10">
-      <section className="mb-8">
-        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Select your role</p>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-          {ROLES.map(r => (
-            <button key={r.id} onClick={() => setRole(r.id)}
-              className={"p-3 rounded-lg border text-left transition-all " + (role === r.id
-                ? "border-indigo-500 bg-indigo-950 text-white"
-                : "border-gray-800 bg-gray-900 text-gray-400 hover:border-gray-600")}>
-              <div className="text-sm font-medium">{r.label}</div>
-              <div className="text-xs mt-0.5 opacity-60">{r.desc}</div>
+    <div className="min-h-screen bg-gray-950 text-gray-100">
+
+      {/* Nav */}
+      <nav className="border-b border-gray-800 bg-gray-950/80 backdrop-blur-sm sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-white font-semibold text-lg tracking-tight">DataVireon</span>
+          <span className="text-xs text-gray-500 border border-gray-700 px-2 py-0.5 rounded-full">beta</span>
+        </div>
+        <div className="flex items-center gap-4">
+          {user ? (
+            <Link href="/app"
+              className="text-sm px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-all">
+              Go to app →
+            </Link>
+          ) : (
+            <button onClick={signInWithGitHub}
+              className="text-sm px-4 py-2 rounded-lg bg-white text-gray-900 font-medium hover:bg-gray-100 transition-all flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+              </svg>
+              Sign in with GitHub
             </button>
+          )}
+        </div>
+      </nav>
+
+      {/* Hero */}
+      <section className="max-w-5xl mx-auto px-6 pt-24 pb-20 text-center">
+        <div className="inline-flex items-center gap-2 bg-indigo-950 border border-indigo-800 rounded-full px-4 py-1.5 text-xs text-indigo-300 mb-8">
+          <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-pulse" />
+          AI-powered problem resolution for data and engineering teams
+        </div>
+        <h1 className="text-5xl sm:text-6xl font-semibold tracking-tight text-white mb-6 leading-tight">
+          Fix data and engineering<br />
+          problems <span className="text-indigo-400">10x faster</span>
+        </h1>
+        <p className="text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed">
+          DataVireon diagnoses your codebase through the lens of your exact role,
+          then walks you through production-grade fixes — step by step or all at once.
+        </p>
+        <div className="flex items-center justify-center gap-4 flex-wrap">
+          {user ? (
+            <Link href="/app"
+              className="px-8 py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-all text-sm">
+              Go to app →
+            </Link>
+          ) : (
+            <button onClick={signInWithGitHub}
+              className="px-8 py-3.5 rounded-xl bg-white text-gray-900 hover:bg-gray-100 font-medium transition-all text-sm flex items-center gap-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+              </svg>
+              Sign in with GitHub
+            </button>
+          )}
+          <a href="#how-it-works"
+            className="px-8 py-3.5 rounded-xl border border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white font-medium transition-all text-sm">
+            See how it works ↓
+          </a>
+        </div>
+
+        {/* Role pills rotating */}
+        <div className="flex items-center justify-center gap-2 mt-12 flex-wrap">
+          <span className="text-sm text-gray-500">Built for</span>
+          {ROLES.map((r, i) => (
+            <span key={r.id}
+              className={"text-xs px-3 py-1.5 rounded-full border transition-all duration-500 " + (i === activeRole
+                ? r.bg + " " + r.color + " border-opacity-100"
+                : "border-gray-800 text-gray-600")}>
+              {r.label}
+            </span>
           ))}
         </div>
       </section>
 
-      <section className="mb-6">
-        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Code source</p>
-        <div className="flex gap-2 mb-3">
-          <button onClick={() => setShowRepo(false)}
-            className={"px-3 py-1.5 rounded-lg text-xs font-medium border transition-all " + (!showRepo ? "border-indigo-500 bg-indigo-950 text-white" : "border-gray-700 text-gray-500 hover:border-gray-600")}>
-            Paste code
-          </button>
-          <button onClick={() => setShowRepo(true)}
-            className={"px-3 py-1.5 rounded-lg text-xs font-medium border transition-all " + (showRepo ? "border-indigo-500 bg-indigo-950 text-white" : "border-gray-700 text-gray-500 hover:border-gray-600")}>
-            Connect GitHub repo
-          </button>
-        </div>
-
-        {showRepo && (
-          <div className="mb-4 bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <div className="flex gap-2 mb-4">
-              <input value={repoUrl} onChange={e => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/owner/repo"
-                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
-              <button onClick={fetchRepo} disabled={repoLoading || !repoUrl}
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
-                {repoLoading ? "Loading..." : "Browse"}
-              </button>
-            </div>
-
-            {repoFiles.length > 0 && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs text-gray-500">{repoOwner} — {repoFiles.length} files — {selectedFiles.length} selected</p>
-                  <button onClick={loadSelectedFiles} disabled={!selectedFiles.length || repoLoading}
-                    className="text-xs px-3 py-1.5 rounded-lg bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white font-medium transition-all">
-                    Load selected →
-                  </button>
-                </div>
-                <div className="max-h-64 overflow-y-auto space-y-1">
-                  {repoFiles.map((f: any) => (
-                    <button key={f.path} onClick={() => toggleFile(f.path)}
-                      className={"w-full text-left px-3 py-1.5 rounded-lg text-xs font-mono transition-all flex items-center justify-between " + (selectedFiles.includes(f.path) ? "bg-indigo-950 text-indigo-300 border border-indigo-700" : "text-gray-400 hover:bg-gray-800")}>
-                      <span className="truncate">{f.path}</span>
-                      <span className="text-gray-600 ml-2 flex-shrink-0">{f.type}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="mb-6">
-        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Paste your code or describe your setup</p>
-        <textarea value={codebase} onChange={e => setCodebase(e.target.value)}
-          rows={8} placeholder="Paste code, config, SQL, pipeline definition..."
-          className="w-full bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm font-mono text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none" />
-      </section>
-
-      <section className="mb-6">
-        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Describe the problem</p>
-        <textarea value={problem} onChange={e => setProblem(e.target.value)}
-          rows={3} placeholder="What is going wrong? Include any error messages..."
-          className="w-full bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none" />
-      </section>
-
-      <div className="flex gap-2">
-        <button onClick={runDiagnostic} disabled={!role || !codebase || !problem || loading}
-          className="flex-1 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-all text-sm">
-          {loading ? "Analyzing..." : "Run diagnostic"}
-        </button>
-        {(loading || stepLoading || autoLoading || advisoryLoading || diagnostic) && (
-          <button onClick={resetAll}
-            className="px-4 py-3 rounded-lg border border-gray-700 text-gray-400 hover:border-red-700 hover:text-red-400 transition-all text-sm font-medium whitespace-nowrap">
-            {(loading || stepLoading || autoLoading || advisoryLoading) ? "✕ Cancel" : "↺ Reset"}
-          </button>
-        )}
-      </div>
-
-      {loading && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
-            <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse delay-75" />
-            <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse delay-150" />
-            <span className="text-sm text-gray-400 ml-1">Analyzing your codebase...</span>
-          </div>
-          <div className="space-y-2">
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-3/4" />
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-1/2" />
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-2/3" />
+      {/* Domain modules */}
+      <section className="border-y border-gray-800 bg-gray-900/50 py-8">
+        <div className="max-w-5xl mx-auto px-6">
+          <p className="text-xs uppercase tracking-widest text-gray-500 mb-4 text-center">8 specialised problem domains</p>
+          <div className="flex flex-wrap gap-2 justify-center">
+            {DOMAINS.map(d => (
+              <span key={d.label} className={"text-xs px-3 py-1.5 rounded-full font-medium " + d.color}>
+                {d.label}
+              </span>
+            ))}
           </div>
         </div>
-      )}
+      </section>
 
-      {diagnostic && !loading && (
-        <div className="mt-8 bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <span className={"text-xs px-2 py-1 rounded font-medium " + (DOMAIN_COLORS[diagnostic.domain] || "bg-gray-800 text-gray-300")}>
-              {diagnostic.domain?.replace("_"," ")}
-            </span>
-            <span className={"text-sm font-semibold uppercase " + (SEVERITY_COLORS[diagnostic.severity] || "text-gray-400")}>
-              {diagnostic.severity}
-            </span>
-            <span className="ml-auto text-xs text-gray-500">{Math.round((diagnostic.confidence || 0) * 100)}% confidence</span>
-          </div>
-          <p className="text-gray-200 text-sm leading-relaxed mb-4">{diagnostic.summary}</p>
-          {diagnostic.symptoms?.length > 0 && (
-            <div className="mb-4">
-              <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">Symptoms detected</p>
-              <ul className="space-y-1">
-                {diagnostic.symptoms.map((s: string, i: number) => (
-                  <li key={i} className="text-sm text-gray-300 flex gap-2"><span className="text-indigo-400">—</span>{s}</li>
-                ))}
-              </ul>
+      {/* Features */}
+      <section className="max-w-5xl mx-auto px-6 py-24">
+        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3 text-center">Why DataVireon</p>
+        <h2 className="text-3xl font-semibold text-white text-center mb-16">
+          Not a chatbot. A resolution platform.
+        </h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {FEATURES.map(f => (
+            <div key={f.title} className="bg-gray-900 border border-gray-800 rounded-xl p-6 hover:border-gray-700 transition-all">
+              <div className="text-2xl mb-4">{f.icon}</div>
+              <h3 className="text-white font-medium mb-2">{f.title}</h3>
+              <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
             </div>
-          )}
-          {diagnostic.affected_areas?.length > 0 && (
-            <div className="mb-6">
-              <p className="text-xs text-gray-500 uppercase tracking-widest mb-2">Affected areas</p>
-              <div className="flex flex-wrap gap-2">
-                {diagnostic.affected_areas.map((a: string, i: number) => (
-                  <span key={i} className="text-xs bg-gray-800 text-gray-300 px-2 py-1 rounded">{a}</span>
-                ))}
+          ))}
+        </div>
+      </section>
+
+      {/* How it works */}
+      <section className="border-t border-gray-800 bg-gray-900/30 py-24">
+        <div className="max-w-4xl mx-auto px-6" id="how-it-works">
+          <p className="text-xs uppercase tracking-widest text-gray-500 mb-3 text-center">How it works</p>
+          <h2 className="text-3xl font-semibold text-white text-center mb-16">From problem to fix in minutes</h2>
+          <div className="space-y-6">
+            {STEPS.map(s => (
+              <div key={s.num} className="flex gap-6 items-start">
+                <span className="text-3xl font-bold text-gray-800 flex-shrink-0 w-12">{s.num}</span>
+                <div className="pt-1">
+                  <h3 className="text-white font-medium mb-1">{s.title}</h3>
+                  <p className="text-gray-400 text-sm leading-relaxed">{s.desc}</p>
+                </div>
               </div>
-            </div>
-          )}
-          {sessionId && (
-            <p className="text-xs text-gray-600 mb-4">Session saved — ID: {sessionId.slice(0,8)}...</p>
-          )}
+            ))}
+          </div>
+        </div>
+      </section>
 
-          <div className="border-t border-gray-800 pt-5 mt-2">
-            <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">How do you want to resolve this?</p>
-            <div className="grid grid-cols-3 gap-2 mb-4">
-              {[
-                { id: "automatic", label: "Fully automatic", desc: "AI applies all fixes" },
-                { id: "semi_auto", label: "Semi-automatic",  desc: "Step checkpoints, you choose" },
-                { id: "advisory",  label: "Advisory only",   desc: "Recommendations, you act" },
-              ].map(m => (
-                <button key={m.id} onClick={() => {
-                  if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
-                  setMode(m.id)
-                  setActiveResult(null)
-                  setStep(null)
-                  setAutoResult(null)
-                  setAdvisory(null)
-                  setPrevSteps([])
-                  setStepNum(1)
-                  setRunbook("")
-                  setStepLoading(false)
-                  setAutoLoading(false)
-                  setAdvisoryLoading(false)
-                }}
-                  className={"p-3 rounded-lg border text-left transition-all " + (mode === m.id
-                    ? "border-indigo-500 bg-indigo-950 text-white"
-                    : "border-gray-800 bg-gray-900 text-gray-400 hover:border-gray-600")}>
-                  <div className="text-sm font-medium">{m.label}</div>
-                  <div className="text-xs mt-0.5 opacity-60">{m.desc}</div>
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-gray-600 mb-4">
-              {mode === "advisory"
-                ? "Receive a prioritised list of recommendations with severity, effort, and exact action steps. No code will be changed."
-                : mode === "automatic"
-                ? "AI applies every fix at once and returns a fully patched codebase ready to copy."
-                : "Walk through fixes one step at a time. Approve, reject, or override each change before moving to the next."}
+      {/* Resolution modes */}
+      <section className="max-w-5xl mx-auto px-6 py-24">
+        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3 text-center">Resolution modes</p>
+        <h2 className="text-3xl font-semibold text-white text-center mb-16">You choose how much control you want</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <div className="text-xs text-green-400 font-medium uppercase tracking-widest mb-3">Fully automatic</div>
+            <h3 className="text-white font-medium mb-3">AI fixes everything</h3>
+            <p className="text-gray-400 text-sm leading-relaxed">
+              DataVireon analyzes all issues and applies every fix at once.
+              Returns a fully patched codebase ready to copy or commit.
+              Best for well-understood, isolated problems.
             </p>
-            <div className="flex gap-2">
-              {mode === "advisory" ? (
-                <button onClick={runAdvisory} disabled={advisoryLoading}
-                  className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
-                  {advisoryLoading ? "Generating recommendations..." : "Get recommendations →"}
-                </button>
-              ) : mode === "automatic" ? (
-                <button onClick={runAuto} disabled={autoLoading}
-                  className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
-                  {autoLoading ? "Applying all fixes..." : "Apply all fixes automatically →"}
-                </button>
-              ) : (
-                <button onClick={() => runStep()} disabled={stepLoading}
-                  className="flex-1 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
-                  {stepLoading ? "Generating fix..." : "Start resolution →"}
-                </button>
-              )}
-              {(advisoryLoading || autoLoading || stepLoading || activeResult) && (
-                <button onClick={() => {
-                  if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
-                  setStepLoading(false)
-                  setAutoLoading(false)
-                  setAdvisoryLoading(false)
-                  if (activeResult) {
-                    setActiveResult(null)
-                    setStep(null)
-                    setAutoResult(null)
-                    setAdvisory(null)
-                    setPrevSteps([])
-                    setStepNum(1)
-                    setRunbook("")
-                  }
-                }}
-                  className="px-4 py-2.5 rounded-lg border border-gray-700 text-gray-400 hover:border-red-700 hover:text-red-400 transition-all text-sm font-medium whitespace-nowrap">
-                  {(advisoryLoading || autoLoading || stepLoading) ? "✕ Cancel" : "↺ Clear"}
-                </button>
-              )}
-            </div>
+          </div>
+          <div className="bg-gray-900 border border-indigo-800 rounded-xl p-6 relative">
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 text-xs bg-indigo-600 text-white px-3 py-1 rounded-full">Recommended</div>
+            <div className="text-xs text-indigo-400 font-medium uppercase tracking-widest mb-3">Semi-automatic</div>
+            <h3 className="text-white font-medium mb-3">Step-by-step with approval</h3>
+            <p className="text-gray-400 text-sm leading-relaxed">
+              Walk through each fix with full visibility. Approve, reject, or
+              override with your own instructions at every checkpoint.
+              Best for production systems and learning.
+            </p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <div className="text-xs text-amber-400 font-medium uppercase tracking-widest mb-3">Advisory only</div>
+            <h3 className="text-white font-medium mb-3">Recommendations, you act</h3>
+            <p className="text-gray-400 text-sm leading-relaxed">
+              Get a prioritised list of issues with severity, effort estimates,
+              and exact action steps. No code changes made.
+              Best for audits, code reviews, and planning.
+            </p>
           </div>
         </div>
-      )}
+      </section>
 
-      {advisoryLoading && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm text-gray-400 animate-pulse">
-          Generating recommendations...
+      {/* CTA */}
+      <section className="border-t border-gray-800 bg-gray-900/50 py-24">
+        <div className="max-w-2xl mx-auto px-6 text-center">
+          <h2 className="text-3xl font-semibold text-white mb-4">Ready to fix your first issue?</h2>
+          <p className="text-gray-400 mb-8">Free to use. No credit card required. Sign in with GitHub and start in seconds.</p>
+          <Link href="/"
+            className="inline-block px-10 py-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-all text-sm">
+            Open DataVireon →
+          </Link>
         </div>
-      )}
+      </section>
 
-      {advisory && !advisoryLoading && activeResult === "advisory" && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <p className="text-xs uppercase tracking-widest text-gray-500 mb-2">Advisory report</p>
-          <p className="text-gray-300 text-sm leading-relaxed mb-6">{advisory.summary}</p>
-
-          {advisory.quick_wins?.length > 0 && (
-            <div className="mb-6 bg-green-950 border border-green-900 rounded-lg p-4">
-              <p className="text-xs text-green-400 uppercase tracking-widest mb-2">Quick wins</p>
-              <ul className="space-y-1">
-                {advisory.quick_wins.map((w: string, i: number) => (
-                  <li key={i} className="text-sm text-green-300 flex gap-2">
-                    <span>⚡</span>{w}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div className="space-y-4">
-            {advisory.recommendations?.map((r: any, i: number) => (
-              <div key={i} className="border border-gray-800 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">#{r.priority}</span>
-                  <span className={"text-xs font-medium uppercase " + (
-                    r.severity === "critical" ? "text-red-400" :
-                    r.severity === "high" ? "text-orange-400" :
-                    r.severity === "medium" ? "text-yellow-400" : "text-green-400"
-                  )}>{r.severity}</span>
-                  <span className="text-xs text-gray-500 ml-auto">effort: {r.effort}</span>
-                </div>
-                <p className="text-white text-sm font-medium mb-2">{r.title}</p>
-                <p className="text-gray-400 text-sm leading-relaxed mb-3">{r.explanation}</p>
-                <div className="bg-gray-950 rounded-lg p-3">
-                  <p className="text-xs text-gray-500 mb-1">Action</p>
-                  <p className="text-sm text-indigo-300">{r.action}</p>
-                </div>
-                <button onClick={() => navigator.clipboard.writeText(r.action)}
-                  className="text-xs text-gray-600 hover:text-gray-400 mt-2 transition-all">
-                  Copy action
-                </button>
-              </div>
-            ))}
+      {/* Footer */}
+      <footer className="border-t border-gray-800 px-6 py-8">
+        <div className="max-w-5xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 text-sm font-medium">DataVireon</span>
+            <span className="text-xs text-gray-700 border border-gray-800 px-2 py-0.5 rounded-full">beta</span>
+          </div>
+          <div className="flex gap-4">
+            <Link href="/app" className="text-xs text-gray-600 hover:text-gray-400 transition-all">Launch app</Link>
           </div>
         </div>
-      )}
-
-      {autoLoading && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse delay-75" />
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse delay-150" />
-            <span className="text-sm text-gray-400 ml-1">Applying all fixes automatically...</span>
-          </div>
-          <div className="space-y-2">
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-full" />
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-4/5" />
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-2/3" />
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-3/4" />
-          </div>
-        </div>
-      )}
-
-      {autoResult && !autoLoading && activeResult === "auto" && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <p className="text-xs uppercase tracking-widest text-gray-500 mb-2">Automatic fix applied</p>
-          <p className="text-gray-300 text-sm leading-relaxed mb-6">{autoResult.summary}</p>
-
-          {autoResult.warnings?.length > 0 && (
-            <div className="mb-6 bg-yellow-950 border border-yellow-900 rounded-lg p-4">
-              <p className="text-xs text-yellow-400 uppercase tracking-widest mb-2">Verify these</p>
-              <ul className="space-y-1">
-                {autoResult.warnings.map((w: string, i: number) => (
-                  <li key={i} className="text-sm text-yellow-300 flex gap-2"><span>⚠</span>{w}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {autoResult.fixes?.map((f: any, i: number) => (
-            <div key={i} className="mb-4 border border-gray-800 rounded-xl p-4">
-              <p className="text-white text-sm font-medium mb-2">{f.title}</p>
-              <p className="text-gray-400 text-sm mb-3">{f.explanation}</p>
-              {f.fixed && (
-                <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre-wrap">
-                  {f.fixed}
-                </pre>
-              )}
-            </div>
-          ))}
-
-          {autoResult.patched_codebase && (
-            <div className="mt-4">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs text-gray-500 uppercase tracking-widest">Patched codebase</p>
-                <button onClick={() => navigator.clipboard.writeText(autoResult.patched_codebase)}
-                  className="text-xs text-gray-500 hover:text-gray-300 transition-all">
-                  Copy all
-                </button>
-              </div>
-              <pre className="bg-gray-950 border border-gray-800 rounded-lg p-4 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre-wrap max-h-96">
-                {autoResult.patched_codebase}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-
-      {stepLoading && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-5">
-          <div className="flex items-center gap-3 mb-5">
-            <div className="flex gap-1">
-              <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{animationDelay:"0ms"}} />
-              <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{animationDelay:"150ms"}} />
-              <div className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{animationDelay:"300ms"}} />
-            </div>
-            <span className="text-sm text-gray-300 font-medium">Generating fix for step {stepNum}...</span>
-          </div>
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="w-4 h-4 rounded-full border-2 border-purple-500 border-t-transparent animate-spin flex-shrink-0" />
-              <div className="h-3 bg-gray-800 rounded animate-pulse flex-1" />
-            </div>
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-4/5 ml-7" />
-            <div className="h-3 bg-gray-800 rounded animate-pulse w-3/5 ml-7" />
-            <div className="h-24 bg-gray-800 rounded animate-pulse w-full mt-2" />
-            <div className="flex gap-2 mt-4">
-              <div className="h-9 bg-gray-800 rounded-lg animate-pulse flex-1" />
-              <div className="h-9 bg-gray-800 rounded-lg animate-pulse flex-1" />
-              <div className="h-9 bg-gray-800 rounded-lg animate-pulse flex-1" />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {step && !stepLoading && activeResult === "semi" && (
-        <div className="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs text-gray-500">Step {stepNum}</span>
-            {step.is_final && <span className="text-xs bg-green-900 text-green-300 px-2 py-0.5 rounded">Final step</span>}
-          </div>
-          <h3 className="text-white font-medium mb-3">{step.step_title}</h3>
-          <p className="text-gray-300 text-sm leading-relaxed mb-4">{step.explanation}</p>
-          {step.diff && (
-            <pre className="bg-gray-950 border border-gray-800 rounded-lg p-4 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre-wrap mb-4">
-              {step.diff}
-            </pre>
-          )}
-          <input value={override} onChange={e => setOverride(e.target.value)}
-            placeholder="Optional: give specific instructions before approving..."
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500 mb-3" />
-          <div className="flex gap-2">
-            <button onClick={approveStep}
-              className="flex-1 py-2 rounded-lg bg-green-700 hover:bg-green-600 text-white text-sm font-medium transition-all">
-              Approve
-            </button>
-            <button onClick={rejectStep}
-              className="flex-1 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium transition-all">
-              Reject
-            </button>
-            <button onClick={() => runStep()}
-              className="flex-1 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white text-sm font-medium transition-all">
-              Override + retry
-            </button>
-          </div>
-        </div>
-      )}
-
-      {prevSteps.length > 0 && activeResult === "semi" && (
-        <div className="mt-6 mb-10">
-          <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Resolution trail</p>
-          <div className="space-y-2">
-            {prevSteps.map((s,i) => (
-              <div key={i} className="flex items-center gap-3 bg-gray-900 border border-gray-800 rounded-lg px-4 py-2">
-                <span className="text-xs text-gray-500">Step {s.step_number}</span>
-                <span className="text-sm text-gray-300 flex-1">{s.explanation}</span>
-                <span className={"text-xs font-medium " + (s.decision==="approved" ? "text-green-400" : "text-gray-500")}>
-                  {s.decision}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </main>
+      </footer>
+    </div>
   )
 }
