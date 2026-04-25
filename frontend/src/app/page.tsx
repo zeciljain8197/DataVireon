@@ -51,6 +51,14 @@ export default function Home() {
   const [stepLoading, setStepLoading] = useState(false)
   const [userId, setUserId]           = useState<string | null>(null)
   const [sessionId, setSessionId]     = useState<string | null>(null)
+  const [runbook, setRunbook]           = useState("")
+  const [runbookLoading, setRunbookLoading] = useState(false)
+  const [repoUrl, setRepoUrl]           = useState("")
+  const [repoFiles, setRepoFiles]       = useState<any[]>([])
+  const [repoLoading, setRepoLoading]   = useState(false)
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
+  const [repoOwner, setRepoOwner]       = useState("")
+  const [showRepo, setShowRepo]         = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -186,6 +194,73 @@ export default function Home() {
     setRawStream("")
   }
 
+  async function fetchRepo() {
+    if (!repoUrl.trim()) return
+    setRepoLoading(true)
+    setRepoFiles([])
+    setSelectedFiles([])
+    try {
+      const res = await fetch("http://localhost:8000/github/tree", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo_url: repoUrl }),
+      })
+      const data = await res.json()
+      if (data.files) {
+        setRepoFiles(data.files)
+        setRepoOwner(data.owner + "/" + data.repo)
+      }
+    } catch(e) { console.error(e) }
+    setRepoLoading(false)
+  }
+
+  async function loadSelectedFiles() {
+    if (!selectedFiles.length) return
+    setRepoLoading(true)
+    try {
+      const res = await fetch("http://localhost:8000/github/contents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo_url: repoUrl, file_paths: selectedFiles }),
+      })
+      const data = await res.json()
+      if (data.combined) {
+        setCodebase(data.combined)
+        setShowRepo(false)
+      }
+    } catch(e) { console.error(e) }
+    setRepoLoading(false)
+  }
+
+  function toggleFile(path: string) {
+    setSelectedFiles(prev =>
+      prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]
+    )
+  }
+
+  async function generateRunbook() {
+    setRunbookLoading(true)
+    setRunbook("")
+    let full = ""
+    try {
+      const res = await fetch("http://localhost:8000/runbook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, problem, diagnostic, steps: prevSteps }),
+      })
+      const reader = res.body!.getReader()
+      const dec = new TextDecoder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        full += dec.decode(value)
+        setRunbook(full)
+      }
+    } catch(e) { console.error(e) }
+    setRunbookLoading(false)
+  }
+
+
   return (
     <main className="max-w-4xl mx-auto px-4 py-10">
       <section className="mb-8">
@@ -201,6 +276,55 @@ export default function Home() {
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="mb-6">
+        <p className="text-xs uppercase tracking-widest text-gray-500 mb-3">Code source</p>
+        <div className="flex gap-2 mb-3">
+          <button onClick={() => setShowRepo(false)}
+            className={"px-3 py-1.5 rounded-lg text-xs font-medium border transition-all " + (!showRepo ? "border-indigo-500 bg-indigo-950 text-white" : "border-gray-700 text-gray-500 hover:border-gray-600")}>
+            Paste code
+          </button>
+          <button onClick={() => setShowRepo(true)}
+            className={"px-3 py-1.5 rounded-lg text-xs font-medium border transition-all " + (showRepo ? "border-indigo-500 bg-indigo-950 text-white" : "border-gray-700 text-gray-500 hover:border-gray-600")}>
+            Connect GitHub repo
+          </button>
+        </div>
+
+        {showRepo && (
+          <div className="mb-4 bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <div className="flex gap-2 mb-4">
+              <input value={repoUrl} onChange={e => setRepoUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo"
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-indigo-500" />
+              <button onClick={fetchRepo} disabled={repoLoading || !repoUrl}
+                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium transition-all">
+                {repoLoading ? "Loading..." : "Browse"}
+              </button>
+            </div>
+
+            {repoFiles.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-gray-500">{repoOwner} — {repoFiles.length} files — {selectedFiles.length} selected</p>
+                  <button onClick={loadSelectedFiles} disabled={!selectedFiles.length || repoLoading}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white font-medium transition-all">
+                    Load selected →
+                  </button>
+                </div>
+                <div className="max-h-64 overflow-y-auto space-y-1">
+                  {repoFiles.map((f: any) => (
+                    <button key={f.path} onClick={() => toggleFile(f.path)}
+                      className={"w-full text-left px-3 py-1.5 rounded-lg text-xs font-mono transition-all flex items-center justify-between " + (selectedFiles.includes(f.path) ? "bg-indigo-950 text-indigo-300 border border-indigo-700" : "text-gray-400 hover:bg-gray-800")}>
+                      <span className="truncate">{f.path}</span>
+                      <span className="text-gray-600 ml-2 flex-shrink-0">{f.type}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="mb-6">

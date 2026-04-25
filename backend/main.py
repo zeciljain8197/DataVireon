@@ -238,3 +238,132 @@ def get_steps(session_id: str):
         return {"steps": result.data}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+class RepoRequest(BaseModel):
+    repo_url: str
+
+class RepoFilesRequest(BaseModel):
+    repo_url: str
+    file_paths: list[str]
+
+def parse_repo_url(url: str) -> tuple[str, str]:
+    # Handle formats:
+    # https://github.com/owner/repo
+    # github.com/owner/repo
+    # owner/repo
+    url = url.strip().rstrip("/")
+    url = url.replace("https://github.com/", "")
+    url = url.replace("http://github.com/", "")
+    url = url.replace("github.com/", "")
+    parts = url.split("/")
+    if len(parts) < 2:
+        raise ValueError("Invalid GitHub URL")
+    return parts[0], parts[1]
+
+@app.post("/github/tree")
+async def get_repo_tree(req: RepoRequest):
+    try:
+        owner, repo = parse_repo_url(req.repo_url)
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Get default branch
+            repo_res = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}",
+                headers=headers
+            )
+            if repo_res.status_code != 200:
+                raise HTTPException(404, f"Repo not found: {owner}/{repo}")
+            
+            default_branch = repo_res.json().get("default_branch", "main")
+            
+            # Get file tree
+            tree_res = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1",
+                headers=headers
+            )
+            tree_data = tree_res.json()
+            
+            # Filter to relevant files only
+            relevant_extensions = {
+                ".py", ".sql", ".yaml", ".yml", ".json", ".ts", ".tsx",
+                ".js", ".jsx", ".tf", ".dockerfile", ".sh", ".toml",
+                ".cfg", ".ini", ".env.example", ".md"
+            }
+            
+            files = []
+            for item in tree_data.get("tree", []):
+                if item["type"] == "blob":
+                    path = item["path"]
+                    ext = "." + path.split(".")[-1] if "." in path else ""
+                    # Skip common non-code dirs
+                    skip = any(path.startswith(p) for p in [
+                        "node_modules/", ".git/", "__pycache__/",
+                        ".next/", "dist/", "build/", ".venv/", "venv/"
+                    ])
+                    if not skip and (ext.lower() in relevant_extensions or "dockerfile" in path.lower()):
+                        files.append({
+                            "path": path,
+                            "size": item.get("size", 0),
+                            "type": ext.lstrip(".")
+                        })
+            
+            return {
+                "owner": owner,
+                "repo": repo,
+                "branch": default_branch,
+                "files": files[:200]  # Cap at 200 files
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/github/contents")
+async def get_file_contents(req: RepoFilesRequest):
+    try:
+        owner, repo = parse_repo_url(req.repo_url)
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        contents = []
+        total_size = 0
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            for path in req.file_paths[:10]:  # Cap at 10 files
+                res = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                    headers=headers
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("encoding") == "base64":
+                        import base64
+                        decoded = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+                        if total_size + len(decoded) < 50000:  # 50KB total cap
+                            contents.append({
+                                "path": path,
+                                "content": decoded,
+                                "size": len(decoded)
+                            })
+                            total_size += len(decoded)
+        
+        combined = "\n\n".join([
+            f"# File: {f['path']}\n{f['content']}"
+            for f in contents
+        ])
+        
+        return {
+            "files": contents,
+            "combined": combined,
+            "total_size_kb": round(total_size / 1024, 1)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
