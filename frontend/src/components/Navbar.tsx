@@ -30,9 +30,14 @@ export default function Navbar() {
           <span className="badge" style={{background:"var(--brand-dim)",color:"var(--text-brand)",borderColor:"var(--border-brand)",fontSize:"10px"}}>beta</span>
         </Link>
         {user && (
-          <Link href="/history" className="text-xs transition-colors" style={{color:"var(--text-3)"}}>
-            History
-          </Link>
+          <>
+            <Link href="/history" className="text-xs transition-colors" style={{color:"var(--text-3)"}}>
+              History
+            </Link>
+            <Link href="/schema" className="text-xs transition-colors" style={{color:"var(--text-3)"}}>
+              Schema analyzer
+            </Link>
+          </>
         )}
       </div>
       <div className="flex items-center gap-2">

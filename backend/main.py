@@ -532,3 +532,97 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         ], temperature=0.1),
         media_type="text/plain",
     )
+
+class SchemaAnalyzeRequest(BaseModel):
+    supabase_url: str
+    supabase_key: str
+    role: str
+    problem: str | None = None
+
+@app.post("/analyze/schema")
+async def analyze_schema(req: SchemaAnalyzeRequest):
+    if not req.supabase_url.startswith("https://") or "supabase.co" not in req.supabase_url:
+        raise HTTPException(400, "Invalid Supabase URL")
+    req.problem = sanitize_input(req.problem or "", 2000)
+
+    headers = {
+        "apikey": req.supabase_key,
+        "Authorization": f"Bearer {req.supabase_key}",
+        "Content-Type": "application/json"
+    }
+
+    common_tables = [
+        "users","profiles","sessions","orders","products","customers",
+        "workspaces","codebase_uploads","resolution_steps","transactions",
+        "events","logs","messages","notifications","settings","teams",
+        "projects","tasks","comments","files","reports","analytics"
+    ]
+
+    schema_info = ""
+    found_tables = []
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            for table in common_tables:
+                res = await client.get(
+                    f"{req.supabase_url}/rest/v1/{table}?select=*&limit=0",
+                    headers=headers
+                )
+                if res.status_code == 200:
+                    found_tables.append(table)
+
+            if not found_tables:
+                raise HTTPException(400, "No accessible tables found. Check your URL and anon key.")
+
+            for table in found_tables[:8]:
+                res = await client.get(
+                    f"{req.supabase_url}/rest/v1/{table}?select=*&limit=1",
+                    headers=headers
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    schema_info += f"Table: {table}\n"
+                    if data and isinstance(data, list) and len(data) > 0:
+                        cols = list(data[0].keys())
+                        schema_info += f"  Columns: {', '.join(cols)}\n"
+                    else:
+                        schema_info += f"  (empty table)\n"
+                    schema_info += "\n"
+
+            schema_info = f"Accessible tables: {', '.join(found_tables)}\n\n" + schema_info
+
+    except httpx.TimeoutException:
+        raise HTTPException(408, "Connection timed out")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Schema fetch failed: {str(e)}")
+
+    skill_prompt = get_skill(req.role, "schema_quality")
+    system_prompt = (
+        (skill_prompt + "\n\n") if skill_prompt else ""
+    ) + (
+        "You are DataVireon analyzing a live Supabase database schema.\n"
+        "Identify schema quality issues, missing constraints, security gaps, and optimization opportunities.\n"
+        "Return ONLY JSON:\n"
+        "{\"domain\":\"schema_quality\","
+        "\"severity\":\"critical|high|medium|low\","
+        "\"confidence\":0.0_to_1.0,"
+        "\"summary\":\"2-3 sentence summary\","
+        "\"symptoms\":[\"issue1\",\"issue2\"],"
+        "\"affected_areas\":[\"table1\",\"table2\"],"
+        "\"recommended_mode\":\"advisory\"}"
+        "\nNo markdown. No text outside JSON."
+    )
+    user_prompt = (
+        f"Role: {req.role.replace('_', ' ')}\n"
+        f"Problem: {req.problem or 'Analyze this schema for quality issues'}\n\n"
+        f"Schema:\n{schema_info[:6000]}"
+    )
+    return StreamingResponse(
+        ollama_stream([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ], temperature=0.1),
+        media_type="text/plain",
+    )
