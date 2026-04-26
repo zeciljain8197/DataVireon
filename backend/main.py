@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from supabase import create_client
 import httpx, os, json
+import anthropic as _anthropic
+from groq import Groq as _Groq
 
 load_dotenv()
 
@@ -115,6 +117,63 @@ class SaveStepRequest(BaseModel):
     proposed_diff: str
     user_decision: str
     override_prompt: str | None = None
+
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+async def claude_stream(messages: list, temperature: float = 0.1):
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    system = next((m["content"] for m in messages if m["role"] == "system"), "")
+    user_msgs = [m for m in messages if m["role"] != "system"]
+    with client.messages.stream(
+        model=ANTHROPIC_MODEL,
+        max_tokens=2048,
+        system=system,
+        messages=user_msgs,
+        temperature=temperature,
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
+
+async def groq_stream(messages: list, temperature: float = 0.1):
+    import asyncio
+    client = _Groq(api_key=GROQ_API_KEY)
+    loop = asyncio.get_event_loop()
+    def _sync():
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            max_tokens=2048,
+            temperature=temperature,
+            stream=True,
+        )
+        chunks = []
+        for chunk in completion:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                chunks.append(delta)
+        return chunks
+    chunks = await loop.run_in_executor(None, _sync)
+    for chunk in chunks:
+        yield chunk
+
+async def ai_stream(messages: list, temperature: float = 0.1):
+    provider = os.getenv("MODEL_PROVIDER", "ollama")
+    if provider == "claude":
+        async def _gen():
+            async for chunk in claude_stream(messages, temperature):
+                yield chunk
+        return _gen()
+    elif provider == "groq":
+        async def _gen():
+            async for chunk in groq_stream(messages, temperature):
+                yield chunk
+        return _gen()
+    else:
+        return ollama_stream(messages, temperature)
 
 MAX_CODEBASE_SIZE = 50_000  # 50KB hard limit
 MAX_REQUESTS_PER_SESSION = 20  # max steps per session
@@ -264,7 +323,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
         "Codebase:\n" + trim_codebase(req.codebase, 4000)
     )
     return StreamingResponse(
-        ollama_stream([
+        await ai_stream([
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ], temperature=0.1),
@@ -302,7 +361,7 @@ async def resolve_step(req: ResolveRequest, request: Request):
         "Provide step " + str(req.step_number) + " of the fix."
     )
     return StreamingResponse(
-        ollama_stream([
+        await ai_stream([
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
         ], temperature=0.2),
@@ -481,7 +540,7 @@ async def advisory(req: AdvisoryRequest, request: Request):
         "Codebase:\n" + trim_codebase(req.codebase, 4000)
     )
     return StreamingResponse(
-        ollama_stream([
+        await ai_stream([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ], temperature=0.2),
@@ -526,7 +585,7 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         "Apply all necessary fixes and return the complete patched codebase."
     )
     return StreamingResponse(
-        ollama_stream([
+        await ai_stream([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ], temperature=0.1),
@@ -620,7 +679,7 @@ async def analyze_schema(req: SchemaAnalyzeRequest):
         f"Schema:\n{schema_info[:6000]}"
     )
     return StreamingResponse(
-        ollama_stream([
+        await ai_stream([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ], temperature=0.1),
