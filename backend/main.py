@@ -43,6 +43,11 @@ if "http://localhost:3000" not in _allowed_origins:
     _allowed_origins.append("http://localhost:3000")
 # Allow all vercel preview deployments
 _allow_origin_regex = r"https://.*\.vercel\.app"
+# Always allow localhost for development
+if "http://localhost:3000" not in _allowed_origins:
+    _allowed_origins.append("http://localhost:3000")
+# Allow all vercel preview deployments
+_allow_origin_regex = r"https://.*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
