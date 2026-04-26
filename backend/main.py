@@ -651,17 +651,56 @@ async def analyze_schema(req: SchemaAnalyzeRequest):
                     f"{req.supabase_url}/rest/v1/{table}?select=*&limit=1",
                     headers=headers
                 )
+                schema_info += f"Table: {table}\n"
                 if res.status_code == 200:
                     data = res.json()
-                    schema_info += f"Table: {table}\n"
                     if data and isinstance(data, list) and len(data) > 0:
-                        cols = list(data[0].keys())
-                        schema_info += f"  Columns: {', '.join(cols)}\n"
+                        row = data[0]
+                        for col, val in row.items():
+                            col_type = type(val).__name__ if val is not None else "unknown/nullable"
+                            nullable = "nullable" if val is None else "has_value"
+                            schema_info += f"  - {col}: {col_type} ({nullable})\n"
                     else:
-                        schema_info += f"  (empty table)\n"
-                    schema_info += "\n"
+                        schema_info += f"  (empty table — cannot infer column types)\n"
 
-            schema_info = f"Accessible tables: {', '.join(found_tables)}\n\n" + schema_info
+                    # Get row count
+                    count_res = await client.get(
+                        f"{req.supabase_url}/rest/v1/{table}?select=count",
+                        headers={**headers, "Prefer": "count=exact"}
+                    )
+                    if "content-range" in count_res.headers:
+                        total = count_res.headers["content-range"].split("/")[-1]
+                        schema_info += f"  Row count: {total}\n"
+
+                    # Check for common missing columns based on role
+                    cols = list(data[0].keys()) if data and isinstance(data, list) and data else []
+                    missing = []
+                    if req.role == "data_engineer":
+                        for expected in ["created_at","updated_at","deleted_at","batch_id","source"]:
+                            if expected not in cols:
+                                missing.append(expected)
+                    elif req.role == "mle":
+                        for expected in ["label","feature_version","split","created_at"]:
+                            if expected not in cols:
+                                missing.append(expected)
+                    elif req.role == "data_analyst":
+                        for expected in ["created_at","updated_at","status","category"]:
+                            if expected not in cols:
+                                missing.append(expected)
+                    elif req.role == "sde":
+                        for expected in ["created_at","updated_at","user_id","deleted_at"]:
+                            if expected not in cols:
+                                missing.append(expected)
+                    elif req.role == "data_scientist":
+                        for expected in ["created_at","experiment_id","variant","outcome"]:
+                            if expected not in cols:
+                                missing.append(expected)
+                    if missing:
+                        schema_info += f"  Missing expected columns for {req.role}: {', '.join(missing)}\n"
+
+                schema_info += "\n"
+
+            schema_info = f"Role context: {req.role.replace('_',' ')}\nAccessible tables: {', '.join(found_tables)}\n\n" + schema_info
 
     except httpx.TimeoutException:
         raise HTTPException(408, "Connection timed out")
@@ -671,17 +710,26 @@ async def analyze_schema(req: SchemaAnalyzeRequest):
         raise HTTPException(500, f"Schema fetch failed: {str(e)}")
 
     skill_prompt = get_skill(req.role, "schema_quality")
+    role_focus = {
+        "data_engineer": "Focus on: missing audit columns (created_at, updated_at, batch_id), data lineage gaps, partitioning opportunities, ingestion patterns, and pipeline reliability.",
+        "sde": "Focus on: missing soft delete columns, lack of user_id foreign keys, RLS gaps, missing indexes on frequently queried columns, and API design patterns.",
+        "data_analyst": "Focus on: missing date dimensions, lack of status/category columns, aggregation opportunities, missing fact/dimension table patterns, and reporting query performance.",
+        "mle": "Focus on: missing label columns, lack of feature versioning, no experiment tracking columns, training data quality issues, and label imbalance indicators.",
+        "data_scientist": "Focus on: missing experiment_id, variant, outcome columns, lack of temporal tracking, statistical validity of the data structure, and A/B testing infrastructure.",
+    }
+
     system_prompt = (
         (skill_prompt + "\n\n") if skill_prompt else ""
     ) + (
-        "You are DataVireon analyzing a live Supabase database schema.\n"
-        "Identify schema quality issues, missing constraints, security gaps, and optimization opportunities.\n"
+        f"You are DataVireon analyzing a live Supabase database schema for a {req.role.replace('_',' ')} professional.\n"
+        f"{role_focus.get(req.role, '')}\n\n"
+        "Identify schema quality issues, missing constraints, security gaps, and role-specific optimization opportunities.\n"
         "Return ONLY JSON:\n"
         "{\"domain\":\"schema_quality\","
         "\"severity\":\"critical|high|medium|low\","
         "\"confidence\":0.0_to_1.0,"
-        "\"summary\":\"2-3 sentence summary\","
-        "\"symptoms\":[\"issue1\",\"issue2\"],"
+        "\"summary\":\"2-3 sentence role-specific summary\","
+        "\"symptoms\":[\"specific issue 1\",\"specific issue 2\",\"specific issue 3\"],"
         "\"affected_areas\":[\"table1\",\"table2\"],"
         "\"recommended_mode\":\"advisory\"}"
         "\nNo markdown. No text outside JSON."
