@@ -222,7 +222,9 @@ async def ollama_stream(messages: list, temperature: float = 0.1):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": OLLAMA_MODEL}
+    provider = os.getenv("MODEL_PROVIDER", "ollama")
+    model = GROQ_MODEL if provider == "groq" else OLLAMA_MODEL
+    return {"status": "ok", "model": model, "provider": provider}
 
 @app.post("/upload")
 def upload(req: UploadRequest):
