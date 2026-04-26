@@ -784,3 +784,149 @@ async def generate_runbook(req: RunbookRequest):
         ], temperature=0.2),
         media_type="text/plain",
     )
+
+class PlanRequest(BaseModel):
+    codebase: str
+    role: str
+    problem: str
+    diagnostic: dict
+
+@app.post("/resolve/plan")
+async def resolve_plan(req: PlanRequest):
+    skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
+
+    system_prompt = (
+        (skill_prompt + "\n\n") if skill_prompt else ""
+    ) + (
+        "You are DataVireon doing a comprehensive code audit.\n"
+        "Your job is to identify EVERY issue in the codebase — be exhaustive and aggressive.\n"
+        "Do not miss anything. Look for:\n"
+        "- Security vulnerabilities (injection, auth, secrets, permissions)\n"
+        "- Performance issues (N+1, missing indexes, inefficient algorithms)\n"
+        "- Data quality issues (missing validation, type errors, nulls)\n"
+        "- Code quality (hardcoded values, missing error handling, logging)\n"
+        "- Production readiness (debug mode, missing monitoring, no rate limiting)\n"
+        "- Best practice violations (plaintext passwords, no hashing, missing CSRF)\n"
+        "Return ONLY JSON:\n"
+        "{\"total_issues\": N,\n"
+        "\"issues\": [\n"
+        "{\"id\": 1, \"severity\": \"critical|high|medium|low\", "
+        "\"title\": \"short title\", "
+        "\"description\": \"what is wrong and why it matters\", "
+        "\"location\": \"which function/line/area\"}\n"
+        "],\n"
+        "\"fix_order\": [1,2,3...] // ordered by priority}\n"
+        "Be exhaustive. Find ALL issues. Minimum 5 issues for any production code."
+    )
+    user_prompt = (
+        f"Role: {req.role.replace('_', ' ')}\n"
+        f"Problem: {req.problem}\n"
+        f"Diagnostic: {json.dumps(req.diagnostic)}\n\n"
+        f"Codebase:\n{sanitize_input(req.codebase, 6000)}"
+    )
+    return StreamingResponse(
+        await ai_stream([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ], temperature=0.1),
+        media_type="text/plain",
+    )
+
+class FeedbackRequest(BaseModel):
+    session_id: str | None = None
+    user_id: str | None = None
+    rating: int  # 1 or -1
+    diagnostic_quality: int | None = None
+    resolution_quality: int | None = None
+    comment: str | None = None
+    role: str | None = None
+    domain: str | None = None
+    problem: str | None = None
+    codebase_snippet: str | None = None
+    diagnostic_summary: str | None = None
+
+@app.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    try:
+        data = {
+            "rating": req.rating,
+            "role": req.role,
+            "domain": req.domain,
+            "problem": sanitize_input(req.problem or "", 500),
+            "codebase_snippet": sanitize_input(req.codebase_snippet or "", 1000),
+            "diagnostic_summary": sanitize_input(req.diagnostic_summary or "", 500),
+            "comment": sanitize_input(req.comment or "", 1000),
+        }
+        if req.session_id and validate_user_id(req.session_id):
+            data["session_id"] = req.session_id
+        if req.user_id and validate_user_id(req.user_id):
+            data["user_id"] = req.user_id
+        if req.diagnostic_quality:
+            data["diagnostic_quality"] = req.diagnostic_quality
+        if req.resolution_quality:
+            data["resolution_quality"] = req.resolution_quality
+
+        supabase.table("feedback").insert(data).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(500, f"Feedback failed: {str(e)}")
+
+
+class FewShotRequest(BaseModel):
+    role: str
+    domain: str
+    problem_summary: str
+    codebase_snippet: str
+    diagnostic_summary: str
+    resolution_steps: list
+
+@app.post("/few-shot/save")
+async def save_few_shot(req: FewShotRequest):
+    try:
+        # Check if similar example exists (same role + domain)
+        existing = supabase.table("few_shot_examples")\
+            .select("id, upvotes, problem_summary")\
+            .eq("role", req.role)\
+            .eq("domain", req.domain)\
+            .limit(5)\
+            .execute()
+
+        # Simple similarity check — if problem summary overlaps significantly
+        for ex in (existing.data or []):
+            overlap = len(set(req.problem_summary.lower().split()) &
+                         set(ex["problem_summary"].lower().split()))
+            if overlap > 5:
+                # Upvote existing instead of creating duplicate
+                supabase.table("few_shot_examples")\
+                    .update({"upvotes": ex["upvotes"] + 1})\
+                    .eq("id", ex["id"])\
+                    .execute()
+                return {"status": "upvoted", "id": ex["id"]}
+
+        # Save new example
+        result = supabase.table("few_shot_examples").insert({
+            "role": req.role,
+            "domain": req.domain,
+            "problem_summary": sanitize_input(req.problem_summary, 500),
+            "codebase_snippet": sanitize_input(req.codebase_snippet, 2000),
+            "diagnostic_summary": sanitize_input(req.diagnostic_summary, 500),
+            "resolution_steps": req.resolution_steps,
+        }).execute()
+        return {"status": "saved", "id": result.data[0]["id"]}
+    except Exception as e:
+        raise HTTPException(500, f"Few-shot save failed: {str(e)}")
+
+
+@app.get("/few-shot/{role}/{domain}")
+async def get_few_shots(role: str, domain: str):
+    try:
+        result = supabase.table("few_shot_examples")\
+            .select("problem_summary, diagnostic_summary, resolution_steps, upvotes")\
+            .eq("role", role)\
+            .eq("domain", domain)\
+            .order("upvotes", desc=True)\
+            .limit(2)\
+            .execute()
+        return {"examples": result.data or []}
+    except Exception as e:
+        return {"examples": []}

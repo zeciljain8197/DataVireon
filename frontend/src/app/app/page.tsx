@@ -217,7 +217,23 @@ export default function App() {
     try {
       await stream(API+"/resolve/step",{session_id:sessionId??"local",codebase,role,problem,
         diagnostic:JSON.stringify(diagnostic),mode,step_number:n,previous_steps:p,override_prompt:override||null,user_id:userId},
-        (json)=>{setStep(JSON.parse(json));setActiveResult("semi")})
+        (json)=>{
+          try {
+            setStep(JSON.parse(json))
+            setActiveResult("semi")
+          } catch(e) {
+            const titleMatch = json.match(/"step_title"\s*:\s*"([^"\\]*(\\.[^"\\]*)*)"/)
+            const explainMatch = json.match(/"explanation"\s*:\s*"([^"\\]*(\\.[^"\\]*)*)"/)
+            setStep({
+              step_title: titleMatch?.[1] || `Step ${n}`,
+              explanation: explainMatch?.[1] || "Fix applied — JSON contained special characters",
+              diff: json.slice(0, 2000),
+              is_final: false,
+              issues_remaining: 0
+            })
+            setActiveResult("semi")
+          }
+        })
     } catch(e:any){if(e.name!=="AbortError")console.error(e)}
     setStepLoading(false);setOverride("")
   }
@@ -455,6 +471,21 @@ export default function App() {
               {sessionId && (
                 <span style={{fontSize:10,color:"var(--text-3)"}}>· Session {sessionId.slice(0,8)}…</span>
               )}
+              <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6}}>
+                {!feedbackSent ? (
+                  <>
+                    <span style={{fontSize:11,color:"var(--text-3)"}}>Helpful?</span>
+                    <button onClick={()=>submitFeedback("up")}
+                      className="btn btn-ghost btn-sm" style={{fontSize:14,height:28,padding:"0 8px"}}>👍</button>
+                    <button onClick={()=>submitFeedback("down")}
+                      className="btn btn-ghost btn-sm" style={{fontSize:14,height:28,padding:"0 8px"}}>👎</button>
+                  </>
+                ) : (
+                  <span style={{fontSize:11,color:feedback==="up"?"var(--green)":"var(--text-3)"}}>
+                    {feedback==="up"?"✓ Saved as example":"✓ Thanks for feedback"}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Summary with typing effect */}
