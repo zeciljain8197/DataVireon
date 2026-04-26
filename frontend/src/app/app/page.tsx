@@ -17,7 +17,7 @@ const MODES = [
   { id:"advisory",  label:"Advisory",      desc:"Recommendations only, no changes",   icon:"📋" },
 ]
 
-const API = process.env.NEXT_PUBLIC_API_URL || "${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}"
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
 function TypingText({ text, speed=14 }: { text:string, speed?:number }) {
   const [out, setOut] = useState("")
