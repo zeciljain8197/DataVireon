@@ -83,6 +83,8 @@ export default function App() {
   const [activeResult,setActiveResult]   = useState<"semi"|"auto"|"advisory"|null>(null)
   const [reqCount,setReqCount]           = useState(0)
   const abortRef = useRef<AbortController|null>(null)
+  const [issuePlan, setIssuePlan] = useState<any>(null)
+  const [planLoading, setPlanLoading] = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(({data}) => setUserId(data.user?.id ?? null))
@@ -100,12 +102,38 @@ export default function App() {
     return () => window.removeEventListener("keydown",h)
   },[role,codebase,problem,loading])
 
+  async function fetchPlan() {
+    setPlanLoading(true)
+    setIssuePlan(null)
+    let full = ""
+    try {
+      const res = await fetch(API + "/resolve/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codebase, role, problem, diagnostic }),
+      })
+      const reader = res.body!.getReader()
+      const dec = new TextDecoder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        full += dec.decode(value)
+      }
+      const match = full.match(/\{[\s\S]*\}/)
+      if (match) {
+        setIssuePlan(JSON.parse(match[0]))
+      }
+    } catch(e) { console.error(e) }
+    setPlanLoading(false)
+  }
+
   function resetAll() {
     if(abortRef.current){abortRef.current.abort();abortRef.current=null}
     setLoading(false);setStepLoading(false);setAutoLoading(false);setAdvisoryLoading(false);setRunbookLoading(false)
     setDiagnostic(null);setStep(null);setAutoResult(null);setAdvisory(null)
     setPrevSteps([]);setStepNum(1);setOverride("");setRunbook("")
     setSessionId(null);setActiveResult(null);setCodebase("");setProblem("");setRole("")
+    setIssuePlan(null)
   }
 
   function clearResult() {

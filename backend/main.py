@@ -784,3 +784,50 @@ async def generate_runbook(req: RunbookRequest):
         ], temperature=0.2),
         media_type="text/plain",
     )
+
+class PlanRequest(BaseModel):
+    codebase: str
+    role: str
+    problem: str
+    diagnostic: dict
+
+@app.post("/resolve/plan")
+async def resolve_plan(req: PlanRequest):
+    skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
+
+    system_prompt = (
+        (skill_prompt + "\n\n") if skill_prompt else ""
+    ) + (
+        "You are DataVireon doing a comprehensive code audit.\n"
+        "Your job is to identify EVERY issue in the codebase — be exhaustive and aggressive.\n"
+        "Do not miss anything. Look for:\n"
+        "- Security vulnerabilities (injection, auth, secrets, permissions)\n"
+        "- Performance issues (N+1, missing indexes, inefficient algorithms)\n"
+        "- Data quality issues (missing validation, type errors, nulls)\n"
+        "- Code quality (hardcoded values, missing error handling, logging)\n"
+        "- Production readiness (debug mode, missing monitoring, no rate limiting)\n"
+        "- Best practice violations (plaintext passwords, no hashing, missing CSRF)\n"
+        "Return ONLY JSON:\n"
+        "{\"total_issues\": N,\n"
+        "\"issues\": [\n"
+        "{\"id\": 1, \"severity\": \"critical|high|medium|low\", "
+        "\"title\": \"short title\", "
+        "\"description\": \"what is wrong and why it matters\", "
+        "\"location\": \"which function/line/area\"}\n"
+        "],\n"
+        "\"fix_order\": [1,2,3...] // ordered by priority}\n"
+        "Be exhaustive. Find ALL issues. Minimum 5 issues for any production code."
+    )
+    user_prompt = (
+        f"Role: {req.role.replace('_', ' ')}\n"
+        f"Problem: {req.problem}\n"
+        f"Diagnostic: {json.dumps(req.diagnostic)}\n\n"
+        f"Codebase:\n{sanitize_input(req.codebase, 6000)}"
+    )
+    return StreamingResponse(
+        await ai_stream([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ], temperature=0.1),
+        media_type="text/plain",
+    )
