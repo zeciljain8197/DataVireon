@@ -34,7 +34,7 @@ export default function History() {
     supabase.auth.getUser().then(async ({ data }) => {
       if (!data.user) { setLoading(false); return }
       setUserId(data.user.id)
-      const res = await fetch(`http://localhost:8000/sessions/${data.user.id}`)
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/sessions/${data.user.id}`)
       const json = await res.json()
       setSessions(json.sessions || [])
       setLoading(false)
@@ -45,7 +45,7 @@ export default function History() {
     setSelected(session)
     setStepsLoading(true)
     setSteps([])
-    const res = await fetch(`http://localhost:8000/session/${session.id}/steps`)
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/session/${session.id}/steps`)
     const json = await res.json()
     setSteps(json.steps || [])
     setStepsLoading(false)

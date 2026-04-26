@@ -11,7 +11,7 @@ const ROLES = [
   { id:"data_scientist", label:"Data Scientist",  icon:"🔬" },
 ]
 
-const API = "http://localhost:8000"
+const API = process.env.NEXT_PUBLIC_API_URL || "${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}"
 
 export default function SchemaAnalyzer() {
   const [url, setUrl]         = useState("")
