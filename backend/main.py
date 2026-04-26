@@ -698,3 +698,41 @@ async def analyze_schema(req: SchemaAnalyzeRequest):
         ], temperature=0.1),
         media_type="text/plain",
     )
+
+class RunbookRequest(BaseModel):
+    role: str
+    problem: str
+    diagnostic: dict
+    steps: list
+
+@app.post("/runbook")
+async def generate_runbook(req: RunbookRequest):
+    skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
+    system_prompt = (
+        "You are DataVireon. Generate a professional incident runbook in markdown.\n"
+        "Include these sections:\n"
+        "# Incident Runbook\n"
+        "## Problem Summary\n"
+        "## Root Cause\n"
+        "## Resolution Steps\n"
+        "## Prevention\n"
+        "## References\n"
+        "Be concise and actionable. Use code blocks for code snippets."
+    )
+    steps_text = "\n".join(
+        f"Step {s.get('step_number', i+1)}: {s.get('explanation', '')} — {s.get('decision', '')}"
+        for i, s in enumerate(req.steps)
+    )
+    user_prompt = (
+        f"Role: {req.role.replace('_', ' ')}\n"
+        f"Problem: {req.problem}\n"
+        f"Diagnostic: {json.dumps(req.diagnostic)}\n"
+        f"Resolution steps taken:\n{steps_text}"
+    )
+    return StreamingResponse(
+        await ai_stream([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ], temperature=0.2),
+        media_type="text/plain",
+    )
