@@ -831,3 +831,102 @@ async def resolve_plan(req: PlanRequest):
         ], temperature=0.1),
         media_type="text/plain",
     )
+
+class FeedbackRequest(BaseModel):
+    session_id: str | None = None
+    user_id: str | None = None
+    rating: int  # 1 or -1
+    diagnostic_quality: int | None = None
+    resolution_quality: int | None = None
+    comment: str | None = None
+    role: str | None = None
+    domain: str | None = None
+    problem: str | None = None
+    codebase_snippet: str | None = None
+    diagnostic_summary: str | None = None
+
+@app.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    try:
+        data = {
+            "rating": req.rating,
+            "role": req.role,
+            "domain": req.domain,
+            "problem": sanitize_input(req.problem or "", 500),
+            "codebase_snippet": sanitize_input(req.codebase_snippet or "", 1000),
+            "diagnostic_summary": sanitize_input(req.diagnostic_summary or "", 500),
+            "comment": sanitize_input(req.comment or "", 1000),
+        }
+        if req.session_id and validate_user_id(req.session_id):
+            data["session_id"] = req.session_id
+        if req.user_id and validate_user_id(req.user_id):
+            data["user_id"] = req.user_id
+        if req.diagnostic_quality:
+            data["diagnostic_quality"] = req.diagnostic_quality
+        if req.resolution_quality:
+            data["resolution_quality"] = req.resolution_quality
+
+        supabase.table("feedback").insert(data).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(500, f"Feedback failed: {str(e)}")
+
+
+class FewShotRequest(BaseModel):
+    role: str
+    domain: str
+    problem_summary: str
+    codebase_snippet: str
+    diagnostic_summary: str
+    resolution_steps: list
+
+@app.post("/few-shot/save")
+async def save_few_shot(req: FewShotRequest):
+    try:
+        # Check if similar example exists (same role + domain)
+        existing = supabase.table("few_shot_examples")\
+            .select("id, upvotes, problem_summary")\
+            .eq("role", req.role)\
+            .eq("domain", req.domain)\
+            .limit(5)\
+            .execute()
+
+        # Simple similarity check — if problem summary overlaps significantly
+        for ex in (existing.data or []):
+            overlap = len(set(req.problem_summary.lower().split()) &
+                         set(ex["problem_summary"].lower().split()))
+            if overlap > 5:
+                # Upvote existing instead of creating duplicate
+                supabase.table("few_shot_examples")\
+                    .update({"upvotes": ex["upvotes"] + 1})\
+                    .eq("id", ex["id"])\
+                    .execute()
+                return {"status": "upvoted", "id": ex["id"]}
+
+        # Save new example
+        result = supabase.table("few_shot_examples").insert({
+            "role": req.role,
+            "domain": req.domain,
+            "problem_summary": sanitize_input(req.problem_summary, 500),
+            "codebase_snippet": sanitize_input(req.codebase_snippet, 2000),
+            "diagnostic_summary": sanitize_input(req.diagnostic_summary, 500),
+            "resolution_steps": req.resolution_steps,
+        }).execute()
+        return {"status": "saved", "id": result.data[0]["id"]}
+    except Exception as e:
+        raise HTTPException(500, f"Few-shot save failed: {str(e)}")
+
+
+@app.get("/few-shot/{role}/{domain}")
+async def get_few_shots(role: str, domain: str):
+    try:
+        result = supabase.table("few_shot_examples")\
+            .select("problem_summary, diagnostic_summary, resolution_steps, upvotes")\
+            .eq("role", role)\
+            .eq("domain", domain)\
+            .order("upvotes", desc=True)\
+            .limit(2)\
+            .execute()
+        return {"examples": result.data or []}
+    except Exception as e:
+        return {"examples": []}

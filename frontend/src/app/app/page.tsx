@@ -85,6 +85,8 @@ export default function App() {
   const abortRef = useRef<AbortController|null>(null)
   const [issuePlan, setIssuePlan] = useState<any>(null)
   const [planLoading, setPlanLoading] = useState(false)
+  const [feedback, setFeedback] = useState<"up"|"down"|null>(null)
+  const [feedbackSent, setFeedbackSent] = useState(false)
 
   useEffect(() => {
     supabase.auth.getUser().then(({data}) => setUserId(data.user?.id ?? null))
@@ -102,9 +104,47 @@ export default function App() {
     return () => window.removeEventListener("keydown",h)
   },[role,codebase,problem,loading])
 
+  async function submitFeedback(rating: "up"|"down", comment?: string) {
+    setFeedback(rating)
+    setFeedbackSent(true)
+    try {
+      await fetch(API + "/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          user_id: userId,
+          rating: rating === "up" ? 1 : -1,
+          role,
+          domain: diagnostic?.domain,
+          problem: problem.slice(0, 500),
+          codebase_snippet: codebase.slice(0, 1000),
+          diagnostic_summary: diagnostic?.summary?.slice(0, 500),
+        }),
+      })
+      // If thumbs up and steps completed, save as few-shot example
+      if (rating === "up" && prevSteps.length > 0) {
+        await fetch(API + "/few-shot/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            role,
+            domain: diagnostic?.domain || "code_quality",
+            problem_summary: problem.slice(0, 500),
+            codebase_snippet: codebase.slice(0, 2000),
+            diagnostic_summary: diagnostic?.summary?.slice(0, 500),
+            resolution_steps: prevSteps.slice(0, 5),
+          }),
+        })
+      }
+    } catch(e) { console.error(e) }
+  }
+
   async function fetchPlan() {
     setPlanLoading(true)
     setIssuePlan(null)
+    setFeedback(null)
+    setFeedbackSent(false)
     let full = ""
     try {
       const res = await fetch(API + "/resolve/plan", {
@@ -134,6 +174,8 @@ export default function App() {
     setPrevSteps([]);setStepNum(1);setOverride("");setRunbook("")
     setSessionId(null);setActiveResult(null);setCodebase("");setProblem("");setRole("")
     setIssuePlan(null)
+    setFeedback(null)
+    setFeedbackSent(false)
   }
 
   function clearResult() {
