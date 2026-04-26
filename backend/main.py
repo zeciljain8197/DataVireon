@@ -38,10 +38,16 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Parse allowed origins from env (comma-separated for multiple)
 _raw_origins = os.getenv("FRONTEND_URL", "http://localhost:3000")
 _allowed_origins = [o.strip() for o in _raw_origins.split(",")]
+# Always allow localhost for development
+if "http://localhost:3000" not in _allowed_origins:
+    _allowed_origins.append("http://localhost:3000")
+# Allow all vercel preview deployments
+_allow_origin_regex = r"https://.*\.vercel\.app"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
