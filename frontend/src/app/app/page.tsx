@@ -486,9 +486,40 @@ export default function App() {
                   {autoLoading?<><span className="spinner"/>Applying fixes…</>:"Apply all fixes →"}
                 </button>
               ):(
-                <button className="btn btn-primary" onClick={()=>runStep()} disabled={stepLoading} style={{flex:1,height:40}}>
-                  {stepLoading?<><span className="spinner"/>Generating step {stepNum}…</>:"Start guided resolution →"}
-                </button>
+                <div style={{display:"flex",flexDirection:"column",gap:8,flex:1}}>
+                  {!issuePlan && !planLoading && (
+                    <button onClick={fetchPlan} className="btn btn-ghost" style={{width:"100%",height:36,fontSize:12}}>
+                      🔍 Scan all issues first (recommended)
+                    </button>
+                  )}
+                  {planLoading && (
+                    <div style={{padding:"8px 14px",borderRadius:"var(--radius-md)",background:"var(--bg-elevated)",border:"1px solid var(--border-1)",fontSize:12,color:"var(--text-2)",display:"flex",alignItems:"center",gap:8}}>
+                      <span className="spinner" style={{borderTopColor:"var(--purple)"}} />
+                      Scanning for all issues…
+                    </div>
+                  )}
+                  {issuePlan && !planLoading && (
+                    <div style={{padding:"12px 14px",borderRadius:"var(--radius-md)",background:"var(--bg-elevated)",border:"1px solid var(--border-1)",marginBottom:4}}>
+                      <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"0.07em",color:"var(--text-3)",marginBottom:8}}>
+                        {issuePlan.total_issues} issues found
+                      </p>
+                      <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:160,overflowY:"auto"}}>
+                        {issuePlan.issues?.map((issue:any,i:number)=>(
+                          <div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:12}}>
+                            <span style={{
+                              color:issue.severity==="critical"?"var(--red)":issue.severity==="high"?"var(--orange)":issue.severity==="medium"?"var(--yellow)":"var(--green)",
+                              fontWeight:600,fontSize:10,textTransform:"uppercase",flexShrink:0,width:52
+                            }}>{issue.severity}</span>
+                            <span style={{color:"var(--text-2)"}}>{issue.title}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <button className="btn btn-primary" onClick={()=>runStep()} disabled={stepLoading} style={{width:"100%",height:40}}>
+                    {stepLoading?<><span className="spinner"/>Fixing issue {stepNum}…</>:issuePlan?`Fix issue ${stepNum} of ${issuePlan.total_issues} →`:"Start guided resolution →"}
+                  </button>
+                </div>
               )}
               {(advisoryLoading||autoLoading||stepLoading||activeResult) && (
                 <button className="btn btn-ghost" onClick={clearResult} style={{height:40}}>
