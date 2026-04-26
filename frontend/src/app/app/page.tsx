@@ -156,7 +156,23 @@ export default function App() {
     setAutoLoading(true);setAutoResult(null)
     try {
       await stream(API+"/resolve/auto",{codebase,role,problem,diagnostic,user_id:userId,session_id:sessionId},
-        (json)=>{setAutoResult(JSON.parse(json));setActiveResult("auto")})
+        (json)=>{
+          try {
+            setAutoResult(JSON.parse(json))
+            setActiveResult("auto")
+          } catch(e) {
+            // JSON parse failed — model returned code with unescaped characters
+            // Extract what we can
+            const summaryMatch = json.match(/"summary"\s*:\s*"([^"\\]*(\\.[^"\\]*)*)"/)
+            setAutoResult({
+              summary: summaryMatch?.[1] || "Fixes applied — JSON parsing failed due to special characters in code",
+              warnings: ["The patched codebase contained special characters that broke JSON serialization. Copy the raw output below."],
+              fixes: [],
+              patched_codebase: json.slice(0, 4000)
+            })
+            setActiveResult("auto")
+          }
+        })
     } catch(e:any){if(e.name!=="AbortError")console.error(e)}
     setAutoLoading(false)
   }

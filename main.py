@@ -595,8 +595,7 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         "Problem: " + req.problem + "\n"
         "Diagnostic: " + json.dumps(req.diagnostic) + "\n\n"
         "Codebase:\n" + trim_codebase(req.codebase, 3000) + "\n\n"
-        "Apply all necessary fixes and return the complete patched codebase.\n"
-        "IMPORTANT: Escape all quotes inside string values. Keep patched_codebase under 2000 characters."
+        "Apply all necessary fixes and return the complete patched codebase."
     )
     return StreamingResponse(
         await ai_stream([
