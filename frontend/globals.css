@@ -1,21 +1,21 @@
 @import "tailwindcss";
 
 :root {
-  --bg-void: #0a0a0f;
-  --bg-base: #0f0f15;
-  --bg-surface: #16161e;
-  --bg-elevated: #1c1c26;
-  --bg-overlay: #22222e;
+  --bg-void: #070709;
+  --bg-base: #0c0c10;
+  --bg-surface: #111116;
+  --bg-elevated: #18181f;
+  --bg-overlay: #1f1f28;
   --brand: #7c6dfa;
   --brand-dim: rgba(124,109,250,0.12);
   --brand-border: rgba(124,109,250,0.35);
   --brand-glow: rgba(124,109,250,0.2);
-  --text-1: #f0f0ff;
-  --text-2: #a8a8c0;
-  --text-3: #6060788;
+  --text-1: #eeeef5;
+  --text-2: #9898b0;
+  --text-3: #52526a;
   --text-brand: #9d91fb;
-  --border-1: rgba(255,255,255,0.08);
-  --border-2: rgba(255,255,255,0.13);
+  --border-1: rgba(255,255,255,0.055);
+  --border-2: rgba(255,255,255,0.1);
   --border-3: rgba(255,255,255,0.18);
   --border-brand: rgba(124,109,250,0.4);
   --green: #34d399;

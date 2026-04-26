@@ -17,3 +17,9 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Skills (keep private)
+backend/skills/__pycache__/
+
+# Logs
+*.log

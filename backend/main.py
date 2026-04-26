@@ -14,16 +14,35 @@ load_dotenv()
 
 app = FastAPI(title="DataVireon API")
 
+
+from fastapi import Request as _Request
+from fastapi.responses import Response as _Response
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: _Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Parse allowed origins from env (comma-separated for multiple)
+_raw_origins = os.getenv("FRONTEND_URL", "http://localhost:3000")
+_allowed_origins = [o.strip() for o in _raw_origins.split(",")]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.23.96.1:11434")
@@ -104,6 +123,26 @@ def guard_codebase(codebase: str):
     if len(codebase) > MAX_CODEBASE_SIZE:
         raise HTTPException(400, f"Codebase too large. Max {MAX_CODEBASE_SIZE//1000}KB allowed.")
 
+
+import re as _re
+
+def sanitize_input(text: str, max_len: int = 50000) -> str:
+    """Strip null bytes and limit length."""
+    if not text:
+        return ""
+    text = text.replace("\x00", "")
+    return text[:max_len]
+
+def validate_user_id(user_id: str | None) -> bool:
+    """Validate user_id is a proper UUID."""
+    if not user_id:
+        return False
+    uuid_pattern = _re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        _re.IGNORECASE
+    )
+    return bool(uuid_pattern.match(user_id))
+
 async def ollama_stream(messages: list, temperature: float = 0.1):
     async with httpx.AsyncClient(timeout=120) as client:
         async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json={
@@ -140,6 +179,8 @@ def upload(req: UploadRequest):
 
 @app.post("/session/save")
 def save_session(req: SaveSessionRequest):
+    if not validate_user_id(req.user_id):
+        raise HTTPException(400, "Invalid user ID")
     try:
         result = supabase.table("sessions").insert({
             "user_id": req.user_id,
@@ -156,6 +197,8 @@ def save_session(req: SaveSessionRequest):
 
 @app.post("/session/step/save")
 def save_step(req: SaveStepRequest):
+    if not req.session_id or len(req.session_id) > 100:
+        raise HTTPException(400, "Invalid session ID")
     try:
         supabase.table("resolution_steps").insert({
             "session_id": req.session_id,
@@ -186,6 +229,8 @@ async def analyze(req: AnalyzeRequest, request: Request):
         ["pipeline","schema_quality","performance","model_health","security","code_quality","environment","testing"]
         if get_skill(req.role, d)
     ])
+    req.codebase = sanitize_input(req.codebase, 50000)
+    req.problem = sanitize_input(req.problem, 2000)
     guard_codebase(req.codebase)
     role_skill_context = all_skills[:2000] if all_skills else ROLE_CONTEXT.get(req.role, "")
 
