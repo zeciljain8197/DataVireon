@@ -216,7 +216,7 @@ export default function App() {
     setStepLoading(true);setStep(null)
     try {
       await stream(API+"/resolve/step",{session_id:sessionId??"local",codebase,role,problem,
-        diagnostic:JSON.stringify(diagnostic),mode,step_number:n,previous_steps:p,override_prompt:override||null,user_id:userId},
+        diagnostic:JSON.stringify(diagnostic),mode,step_number:n,previous_steps:p,override_prompt:override||null,user_id:userId,issue_plan:issuePlan?.issues||null},
         (json)=>{
           try {
             setStep(JSON.parse(json))

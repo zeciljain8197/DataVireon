@@ -346,32 +346,56 @@ async def analyze(req: AnalyzeRequest, request: Request):
 @app.post("/resolve/step")
 @limiter.limit("20/minute")
 async def resolve_step(req: ResolveRequest, request: Request):
+    # Build step context
+    approved_steps = [s for s in req.previous_steps if s.get("decision") == "approved"]
+    fixed_count = len(approved_steps)
     steps_context = ""
-    if req.previous_steps:
-        steps_context = "\n\nPrevious steps:\n" + "\n".join(
-            "Step " + str(s["step_number"]) + ": " + s["explanation"] + " — User: " + s["decision"]
-            for s in req.previous_steps
+    if approved_steps:
+        steps_context = "\n\nAlready fixed:\n" + "\n".join(
+            f"  {i+1}. {s.get('explanation','')[:100]}"
+            for i, s in enumerate(approved_steps)
         )
+
     override = ("\n\nUser instruction: " + req.override_prompt) if req.override_prompt else ""
+
+    # Use issue plan for precise issue tracking
+    issue_instruction = ""
+    issue_plan = getattr(req, "issue_plan", None)
+    if issue_plan and len(issue_plan) > 0:
+        current_idx = fixed_count
+        if current_idx < len(issue_plan):
+            current_issue = issue_plan[current_idx]
+            issue_instruction = (
+                f"\n\nYOU MUST FIX THIS SPECIFIC ISSUE ONLY (#{current_idx+1} of {len(issue_plan)}):\n"
+                f"  Title: {current_issue.get('title','')}\n"
+                f"  Severity: {current_issue.get('severity','')}\n"
+                f"  Description: {current_issue.get('description','')}\n"
+                f"  Location: {current_issue.get('location','')}\n"
+                f"Do NOT fix anything else. Do NOT repeat previous fixes.\n"
+                f"Set is_final=true if this is issue #{len(issue_plan)} (the last one).\n"
+            )
+        else:
+            issue_instruction = "\nAll issues have been fixed. Set is_final=true.\n"
 
     system_prompt = (
         "You are DataVireon, an expert code resolution assistant in semi-automatic mode.\n"
-        "Provide ONE focused fix step. Return ONLY JSON:\n"
-        "{\"step_title\":\"short title\","
+        "Provide ONE focused fix step for the specific issue instructed. Return ONLY JSON:\n"
+        "{\"step_title\":\"short specific title\","
         "\"explanation\":\"clear explanation of what and why\","
-        "\"diff\":\"unified diff or full corrected code block\","
+        "\"diff\":\"corrected code — use \\n for newlines inside JSON strings\","
         "\"language\":\"python|sql|yaml|etc\","
         "\"is_final\":true_or_false}"
         "\nNo markdown. No text outside the JSON."
+        "\nCRITICAL: Never repeat a fix that was already applied."
     )
     user_prompt = (
         "Role: " + req.role.replace("_", " ") + "\n"
         "Problem: " + req.problem + "\n"
         "Diagnostic: " + req.diagnostic + "\n"
         "Step number: " + str(req.step_number)
-        + steps_context + override + "\n\n"
+        + steps_context + issue_instruction + override + "\n\n"
         "Codebase:\n" + trim_codebase(req.codebase, 3000) + "\n\n"
-        "Provide step " + str(req.step_number) + " of the fix."
+        "Provide the fix for the specific issue instructed above."
     )
     return StreamingResponse(
         await ai_stream([
