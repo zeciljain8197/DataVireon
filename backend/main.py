@@ -112,6 +112,7 @@ class ResolveRequest(BaseModel):
     previous_steps: list = []
     override_prompt: str | None = None
     user_id: str | None = None
+    issue_plan: list | None = None
 
 class SaveSessionRequest(BaseModel):
     user_id: str
