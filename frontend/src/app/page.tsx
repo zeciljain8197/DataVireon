@@ -96,7 +96,7 @@ export default function Landing() {
           <span style={{width:6,height:6,borderRadius:"50%",background:"var(--brand)",display:"inline-block"}} />
           AI-powered problem resolution for data and engineering teams
         </div>
-        <h1 style={{fontSize:52,fontWeight:700,lineHeight:1.1,letterSpacing:-1.5,color:"var(--text-1)",marginBottom:24}}>
+        <h1 style={{fontSize:"clamp(32px, 6vw, 52px)",fontWeight:700,lineHeight:1.1,letterSpacing:-1,color:"var(--text-1)",marginBottom:24}}>
           Fix data and engineering<br />
           problems{" "}
           <span style={{background:"linear-gradient(135deg,#9d91fb,#c4b5fd 40%,#f59e0b)",
@@ -169,7 +169,7 @@ export default function Landing() {
           <h2 style={{fontSize:32,fontWeight:600,color:"var(--text-1)",textAlign:"center",marginBottom:56}}>
             Not a chatbot. A resolution platform.
           </h2>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
             {FEATURES.map(f => (
               <div key={f.title} style={{background:"var(--bg-surface)",border:"1px solid var(--border-1)",
                 borderRadius:16,padding:24,transition:"border-color 0.2s"}}>
@@ -210,7 +210,7 @@ export default function Landing() {
           <h2 style={{fontSize:32,fontWeight:600,color:"var(--text-1)",textAlign:"center",marginBottom:56}}>
             You choose how much control you want
           </h2>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:16}}>
             {[
               {tag:"Fully automatic",color:"var(--green)",title:"AI fixes everything",
                desc:"DataVireon analyses all issues and applies every fix at once. Returns a fully patched codebase ready to copy or commit. Best for well-understood, isolated problems."},

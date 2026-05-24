@@ -377,7 +377,7 @@ export default function App() {
         )}
 
         {/* Header row */}
-        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:28}}>
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:28,flexWrap:"wrap",gap:12}}>
           <div>
             <h1 style={{fontSize:20,fontWeight:600,color:"var(--text-1)",letterSpacing:-0.5}}>
               {role ? `${ROLES.find(r=>r.id===role)?.icon} ${ROLES.find(r=>r.id===role)?.label} workspace` : "What are you debugging?"}
@@ -400,7 +400,7 @@ export default function App() {
           <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"0.08em",color:"var(--text-3)",marginBottom:10}}>
             01 — Select role
           </p>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}} className="role-grid">
             {ROLES.map(r=>(
               <button key={r.id} onClick={()=>setRole(r.id)}
                 className={"card card-hover " + (role===r.id?"card-active":"")}
@@ -598,7 +598,7 @@ export default function App() {
                "Walk through each fix one step at a time. Approve, reject, or override with your own instructions at every checkpoint."}
             </p>
 
-            <div style={{display:"flex",gap:8}}>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               {mode==="advisory"?(
                 <button className="btn btn-primary" onClick={runAdvisory} disabled={advisoryLoading} style={{flex:1,height:40}}>
                   {advisoryLoading?<><span className="spinner"/>Generating…</>:"Get recommendations →"}
@@ -670,7 +670,7 @@ export default function App() {
             <input className="input" value={override} onChange={e=>setOverride(e.target.value)}
               placeholder="Optional: add specific instructions before approving…"
               style={{marginBottom:12}} />
-            <div style={{display:"flex",gap:8}}>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               <button className="btn btn-success" onClick={approve} style={{flex:1}}>✓ Approve</button>
               <button className="btn btn-ghost" onClick={reject} style={{flex:1}}>✕ Reject</button>
               <button className="btn btn-brand-soft" onClick={()=>runStep()} style={{flex:1}}>↺ Override</button>

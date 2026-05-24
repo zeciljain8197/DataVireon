@@ -268,3 +268,22 @@ kbd {
 }
 .loading-dots span:nth-child(2) { animation-delay:0.18s; }
 .loading-dots span:nth-child(3) { animation-delay:0.36s; }
+
+/* ── Mobile responsive ── */
+@media (max-width: 640px) {
+  .role-grid {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+  .role-grid > *:nth-child(4) {
+    grid-column: 1 / 2;
+  }
+  .role-grid > *:nth-child(5) {
+    grid-column: 2 / 3;
+  }
+  .mode-grid {
+    grid-template-columns: 1fr !important;
+  }
+  kbd {
+    display: none;
+  }
+}
