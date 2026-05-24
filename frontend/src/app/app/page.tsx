@@ -83,12 +83,30 @@ export default function App() {
   const [activeResult,setActiveResult]   = useState<"semi"|"auto"|"advisory"|null>(null)
   const [reqCount,setReqCount]           = useState(0)
   const abortRef = useRef<AbortController|null>(null)
+  const [backendStatus, setBackendStatus] = useState<"unknown"|"waking"|"ready">("unknown")
+  const [wakeTime, setWakeTime] = useState(0)
   const [issuePlan, setIssuePlan] = useState<any>(null)
   const [planLoading, setPlanLoading] = useState(false)
   const [feedback, setFeedback] = useState<"up"|"down"|null>(null)
   const [feedbackSent, setFeedbackSent] = useState(false)
 
   useEffect(() => {
+    // Check if backend is awake
+    const checkBackend = async () => {
+      try {
+        const start = Date.now()
+        const res = await fetch(API + "/health", { signal: AbortSignal.timeout(5000) })
+        if (res.ok) {
+          setBackendStatus("ready")
+          setWakeTime(Math.round((Date.now()-start)/1000))
+        }
+      } catch {
+        setBackendStatus("waking")
+        // Retry every 5 seconds
+        setTimeout(checkBackend, 5000)
+      }
+    }
+    checkBackend()
     supabase.auth.getUser().then(({data}) => setUserId(data.user?.id ?? null))
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_,s) => setUserId(s?.user?.id ?? null))
     return () => subscription.unsubscribe()
@@ -326,6 +344,31 @@ export default function App() {
     <>
       <Navbar />
       <main style={{maxWidth:720,margin:"0 auto",padding:"32px 16px 80px"}}>
+
+        {/* Backend status banner */}
+        {backendStatus === "waking" && (
+          <div className="fade-in" style={{
+            padding:"10px 16px",borderRadius:"var(--radius-md)",marginBottom:16,
+            background:"var(--yellow-dim)",border:"1px solid rgba(251,191,36,0.2)",
+            display:"flex",alignItems:"center",gap:10
+          }}>
+            <div className="loading-dots">
+              <span style={{background:"var(--yellow)"}}/><span style={{background:"var(--yellow)"}}/><span style={{background:"var(--yellow)"}}/>
+            </div>
+            <span style={{fontSize:12,color:"var(--yellow)"}}>
+              Backend is waking up — this takes 30-60 seconds on first visit. Hang tight...
+            </span>
+          </div>
+        )}
+        {backendStatus === "ready" && wakeTime > 3 && (
+          <div className="fade-in" style={{
+            padding:"8px 16px",borderRadius:"var(--radius-md)",marginBottom:16,
+            background:"var(--green-dim)",border:"1px solid var(--green-border)",
+            display:"flex",alignItems:"center",gap:8
+          }}>
+            <span style={{color:"var(--green)",fontSize:12}}>✓ Backend ready — took {wakeTime}s to wake up</span>
+          </div>
+        )}
 
         {/* Header row */}
         <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:28}}>
