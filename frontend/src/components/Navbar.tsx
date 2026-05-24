@@ -26,7 +26,7 @@ export default function Navbar() {
 
         {/* Left — logo */}
         <Link href="/" style={{display:"flex",alignItems:"center",gap:8,flexShrink:0,textDecoration:"none"}}>
-          <img src="/android-chrome-192x192.png" alt="DataVireon"
+          <img src={mounted && theme === "light" ? "/logo-light-icon.png" : "/android-chrome-192x192.png"} alt="DataVireon"
             style={{height:26,width:26,borderRadius:5,objectFit:"contain"}} />
           <span style={{fontWeight:600,fontSize:14,color:"var(--text-1)"}}>DataVireon</span>
           <span className="badge" style={{background:"var(--brand-dim)",color:"var(--text-brand)",
