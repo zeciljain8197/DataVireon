@@ -58,6 +58,8 @@ export default function Landing() {
   useEffect(() => {
     setMounted(true)
     supabase.auth.getUser().then(({data}) => setUser(data.user))
+    supabase.from("sessions").select("id", { count: "exact", head: true })
+      .then(({ count }) => { if (count) setDiagCount(count) })
     // Fetch total diagnostic count
     supabase.from("sessions").select("id", { count: "exact", head: true })
       .then(({ count }) => { if (count) setDiagCount(count) })
@@ -83,6 +85,13 @@ export default function Landing() {
           <span style={{width:6,height:6,borderRadius:"50%",background:"var(--brand)",display:"inline-block"}} />
           AI-powered problem resolution for data and engineering teams
         </div>
+        {diagCount !== null && diagCount > 0 && (
+          <div style={{marginBottom:16}}>
+            <span style={{fontSize:12,color:"var(--text-3)"}}>
+              🔥 <strong style={{color:"var(--text-2)"}}>{diagCount.toLocaleString()}</strong> diagnostics run so far
+            </span>
+          </div>
+        )}
         <h1 style={{fontSize:"clamp(32px, 6vw, 52px)",fontWeight:700,lineHeight:1.1,letterSpacing:-1,color:"var(--text-1)",marginBottom:24}}>
           Fix data and engineering<br />
           problems{" "}
