@@ -52,11 +52,15 @@ export default function Landing() {
   const [user, setUser]           = useState<any>(null)
   const [activeRole, setActiveRole] = useState(0)
   const [mounted, setMounted]       = useState(false)
+  const [diagCount, setDiagCount]   = useState<number|null>(null)
   const { theme }                   = useTheme()
 
   useEffect(() => {
     setMounted(true)
     supabase.auth.getUser().then(({data}) => setUser(data.user))
+    // Fetch total diagnostic count
+    supabase.from("sessions").select("id", { count: "exact", head: true })
+      .then(({ count }) => { if (count) setDiagCount(count) })
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_,s) => setUser(s?.user ?? null))
     const t = setInterval(() => setActiveRole(r => (r+1) % ROLES.length), 2000)
     return () => { subscription.unsubscribe(); clearInterval(t) }
