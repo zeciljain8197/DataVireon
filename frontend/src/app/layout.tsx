@@ -8,6 +8,20 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "DataVireon — AI Resolution Platform",
   description: "Role-aware AI problem resolution for data and engineering teams",
+  openGraph: {
+    title: "DataVireon — AI Resolution Platform",
+    description: "Role-aware AI problem resolution for data and engineering teams",
+    url: "https://data-vireon.vercel.app",
+    siteName: "DataVireon",
+    images: [{ url: "https://data-vireon.vercel.app/android-chrome-512x512.png", width: 512, height: 512 }],
+    type: "website",
+  },
+  twitter: {
+    card: "summary",
+    title: "DataVireon — AI Resolution Platform",
+    description: "Role-aware AI problem resolution for data and engineering teams",
+    images: ["https://data-vireon.vercel.app/android-chrome-512x512.png"],
+  },
   icons: {
     icon: [
       { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
