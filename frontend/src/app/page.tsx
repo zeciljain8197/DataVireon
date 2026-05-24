@@ -2,6 +2,7 @@
 import Link from "next/link"
 import { useState, useEffect } from "react"
 import { supabase, signInWithGitHub } from "@/lib/supabase"
+import { useTheme } from "next-themes"
 
 const ROLES = [
   { label:"Data Engineer", color:"var(--blue)" },
@@ -49,8 +50,11 @@ const GH_ICON = (
 export default function Landing() {
   const [user, setUser]           = useState<any>(null)
   const [activeRole, setActiveRole] = useState(0)
+  const [mounted, setMounted]       = useState(false)
+  const { theme }                   = useTheme()
 
   useEffect(() => {
+    setMounted(true)
     supabase.auth.getUser().then(({data}) => setUser(data.user))
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_,s) => setUser(s?.user ?? null))
     const t = setInterval(() => setActiveRole(r => (r+1) % ROLES.length), 2000)
