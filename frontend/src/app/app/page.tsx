@@ -85,6 +85,7 @@ export default function App() {
   const abortRef = useRef<AbortController|null>(null)
   const [backendStatus, setBackendStatus] = useState<"unknown"|"waking"|"ready">("unknown")
   const [wakeTime, setWakeTime] = useState(0)
+  const [showOnboarding, setShowOnboarding] = useState(false)
   const [issuePlan, setIssuePlan] = useState<any>(null)
   const [planLoading, setPlanLoading] = useState(false)
   const [feedback, setFeedback] = useState<"up"|"down"|null>(null)
@@ -107,6 +108,11 @@ export default function App() {
       }
     }
     checkBackend()
+    // Show onboarding on first visit
+    if (!localStorage.getItem("dv_visited")) {
+      setShowOnboarding(true)
+      localStorage.setItem("dv_visited", "1")
+    }
     supabase.auth.getUser().then(({data}) => setUserId(data.user?.id ?? null))
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_,s) => setUserId(s?.user?.id ?? null))
     return () => subscription.unsubscribe()
@@ -789,6 +795,46 @@ export default function App() {
         )}
 
       </main>
+
+      {/* Onboarding modal */}
+      {showOnboarding && (
+        <div className="fade-in" style={{
+          position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",
+          backdropFilter:"blur(4px)",zIndex:100,
+          display:"flex",alignItems:"center",justifyContent:"center",padding:24
+        }}>
+          <div className="card fade-up" style={{maxWidth:480,width:"100%",padding:32}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
+              <img src="/android-chrome-192x192.png" alt="" style={{height:36,width:36,borderRadius:8}} />
+              <div>
+                <h2 style={{fontSize:18,fontWeight:600,color:"var(--text-1)"}}>Welcome to DataVireon</h2>
+                <p style={{fontSize:12,color:"var(--text-3)",marginTop:2}}>AI-powered code resolution for engineers</p>
+              </div>
+            </div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:24}}>
+              {[
+                { num:"01", title:"Select your role", desc:"Choose Data Engineer, SDE, MLE, Data Analyst, or Data Scientist — everything adapts to your context." },
+                { num:"02", title:"Add your code", desc:"Paste code directly or connect a GitHub repo and browse files." },
+                { num:"03", title:"Describe the problem", desc:"What's going wrong? Include error messages, symptoms, or unexpected behaviour." },
+                { num:"04", title:"Run diagnostic & resolve", desc:"Get a role-aware diagnosis, then fix issues step by step, automatically, or get recommendations." },
+              ].map(s => (
+                <div key={s.num} style={{display:"flex",gap:14,alignItems:"flex-start"}}>
+                  <span style={{fontSize:20,fontWeight:700,color:"var(--border-2)",flexShrink:0,lineHeight:1.2}}>{s.num}</span>
+                  <div>
+                    <p style={{fontSize:13,fontWeight:600,color:"var(--text-1)",marginBottom:2}}>{s.title}</p>
+                    <p style={{fontSize:12,color:"var(--text-2)",lineHeight:1.5}}>{s.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button className="btn btn-primary btn-lg" onClick={()=>setShowOnboarding(false)} style={{width:"100%"}}>
+              Get started →
+            </button>
+          </div>
+        </div>
+      )}
     </>
   )
 }
