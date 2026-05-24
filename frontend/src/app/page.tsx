@@ -1,5 +1,6 @@
 "use client"
 import Link from "next/link"
+import Navbar from "@/components/Navbar"
 import { useState, useEffect } from "react"
 import { supabase, signInWithGitHub } from "@/lib/supabase"
 import { useTheme } from "next-themes"
@@ -68,29 +69,7 @@ export default function Landing() {
   return (
     <div style={{minHeight:"100vh",background:"var(--bg-base)",color:"var(--text-1)"}}>
 
-      {/* Nav */}
-      <nav style={{position:"sticky",top:0,zIndex:50,backdropFilter:"blur(16px)",
-        background:"rgba(12,12,16,0.85)",borderBottom:"1px solid var(--border-1)",
-        padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <img src="/android-chrome-512x512.png" alt="DataVireon" style={{height:28,width:28,borderRadius:6,objectFit:"contain"}} />
-          <span style={{fontWeight:600,fontSize:14,color:"var(--text-1)"}}>DataVireon</span>
-          <span style={{fontSize:10,padding:"2px 8px",borderRadius:99,background:"var(--brand-dim)",
-            color:"var(--text-brand)",border:"1px solid var(--border-brand)"}}>beta</span>
-        </div>
-        {user ? (
-          <Link href="/app" style={{display:"inline-flex",alignItems:"center",gap:6,padding:"6px 16px",
-            borderRadius:10,background:"var(--brand)",color:"white",fontSize:13,fontWeight:500,textDecoration:"none"}}>
-            Go to app →
-          </Link>
-        ) : (
-          <button onClick={signInWithGitHub} style={{display:"inline-flex",alignItems:"center",gap:6,padding:"6px 16px",
-            borderRadius:10,background:"var(--bg-elevated)",color:"var(--text-1)",fontSize:13,fontWeight:500,
-            border:"1px solid var(--border-2)",cursor:"pointer"}}>
-            {GH_ICON} Sign in with GitHub
-          </button>
-        )}
-      </nav>
+      <Navbar />
 
       {/* Hero */}
       <section style={{...W2, paddingTop:96, paddingBottom:80}}>
