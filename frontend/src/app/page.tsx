@@ -267,6 +267,7 @@ export default function Landing() {
       <footer style={{borderTop:"1px solid var(--border-1)",padding:"24px",
         display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <img src="/android-chrome-192x192.png" alt="DataVireon" style={{height:20,width:20,borderRadius:4,objectFit:"contain"}} />
           <span style={{fontSize:13,fontWeight:500,color:"var(--text-2)"}}>DataVireon</span>
           <span style={{fontSize:10,padding:"2px 8px",borderRadius:99,background:"var(--bg-elevated)",
             color:"var(--text-3)",border:"1px solid var(--border-1)"}}>beta</span>

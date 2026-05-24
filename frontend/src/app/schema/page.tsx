@@ -67,9 +67,10 @@ export default function SchemaAnalyzer() {
           <Link href="/app" style={{fontSize:12,color:"var(--text-3)",textDecoration:"none",display:"inline-flex",alignItems:"center",gap:4,marginBottom:16}}>
             ← Back to app
           </Link>
-          <h1 style={{fontSize:20,fontWeight:600,color:"var(--text-1)",letterSpacing:-0.5}}>
-            🗄 Supabase schema analyzer
-          </h1>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <img src="/android-chrome-192x192.png" alt="" style={{height:24,width:24,borderRadius:5,objectFit:"contain"}} />
+            <h1 style={{fontSize:20,fontWeight:600,color:"var(--text-1)",letterSpacing:-0.5}}>Supabase schema analyzer</h1>
+          </div>
           <p style={{fontSize:13,color:"var(--text-3)",marginTop:4}}>
             Connect your Supabase project and get an AI-powered schema quality analysis
           </p>
