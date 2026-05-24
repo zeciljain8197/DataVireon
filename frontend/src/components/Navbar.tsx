@@ -22,10 +22,7 @@ export default function Navbar() {
     <nav className="glass sticky top-0 z-50 px-5 py-0 h-14 flex items-center justify-between">
       <div className="flex items-center gap-5">
         <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold"
-            style={{background:"linear-gradient(135deg,#7c6dfa,#a855f7)"}}>
-            DV
-          </div>
+          <img src="/logo-icon.png" alt="DataVireon" style={{height:28,width:28,borderRadius:6,objectFit:"contain"}} />
           <span className="font-semibold text-sm" style={{color:"var(--text-1)"}}>DataVireon</span>
           <span className="badge" style={{background:"var(--brand-dim)",color:"var(--text-brand)",borderColor:"var(--border-brand)",fontSize:"10px"}}>beta</span>
         </Link>

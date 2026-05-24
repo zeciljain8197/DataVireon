@@ -69,8 +69,7 @@ export default function Landing() {
         background:"rgba(12,12,16,0.85)",borderBottom:"1px solid var(--border-1)",
         padding:"0 24px",height:56,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{width:28,height:28,borderRadius:8,background:"linear-gradient(135deg,#7c6dfa,#a855f7)",
-            display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontSize:11,fontWeight:700}}>DV</div>
+          <img src="/logo-icon.png" alt="DataVireon" style={{height:28,width:28,borderRadius:6,objectFit:"contain"}} />
           <span style={{fontWeight:600,fontSize:14,color:"var(--text-1)"}}>DataVireon</span>
           <span style={{fontSize:10,padding:"2px 8px",borderRadius:99,background:"var(--brand-dim)",
             color:"var(--text-brand)",border:"1px solid var(--border-brand)"}}>beta</span>
