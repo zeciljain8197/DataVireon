@@ -58,11 +58,11 @@ export default function Landing() {
   useEffect(() => {
     setMounted(true)
     supabase.auth.getUser().then(({data}) => setUser(data.user))
-    supabase.from("sessions").select("id", { count: "exact", head: true })
-      .then(({ count }) => { if (count) setDiagCount(count) })
+    supabase.rpc("get_session_count")
+      .then(({ data }) => { if (data) setDiagCount(data) })
     // Fetch total diagnostic count
-    supabase.from("sessions").select("id", { count: "exact", head: true })
-      .then(({ count }) => { if (count) setDiagCount(count) })
+    supabase.rpc("get_session_count")
+      .then(({ data }) => { if (data) setDiagCount(data) })
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_,s) => setUser(s?.user ?? null))
     const t = setInterval(() => setActiveRole(r => (r+1) % ROLES.length), 2000)
     return () => { subscription.unsubscribe(); clearInterval(t) }
