@@ -346,3 +346,13 @@ textarea.input {
   .nav-links { display: none !important; }
   .nav-signin-text { display: none; }
 }
+
+/* Hamburger — mobile only */
+.hamburger-btn { display: none !important; }
+.mobile-menu { display: none !important; }
+
+@media (max-width: 520px) {
+  .nav-links { display: none !important; }
+  .hamburger-btn { display: flex !important; }
+  .mobile-menu { display: flex !important; }
+}
