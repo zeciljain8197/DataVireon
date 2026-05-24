@@ -269,21 +269,74 @@ kbd {
 .loading-dots span:nth-child(2) { animation-delay:0.18s; }
 .loading-dots span:nth-child(3) { animation-delay:0.36s; }
 
-/* ── Mobile responsive ── */
-@media (max-width: 640px) {
+/* ── Responsive & fluid layout ── */
+
+/* Fluid container max-width */
+main {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Shortcuts — hide below 600px */
+.shortcuts-hint { display: flex; }
+
+/* Role grid — fluid */
+.role-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+
+/* Mode grid — fluid */
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+@media (max-width: 700px) {
+  .shortcuts-hint { display: none !important; }
+
   .role-grid {
     grid-template-columns: repeat(3, 1fr) !important;
   }
-  .role-grid > *:nth-child(4) {
-    grid-column: 1 / 2;
+
+  .mode-grid {
+    grid-template-columns: 1fr 1fr !important;
   }
-  .role-grid > *:nth-child(5) {
-    grid-column: 2 / 3;
+
+  .btn-lg {
+    height: 42px !important;
+    font-size: 13px !important;
   }
+}
+
+@media (max-width: 480px) {
+  .role-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 6px !important;
+  }
+
   .mode-grid {
     grid-template-columns: 1fr !important;
   }
-  kbd {
-    display: none;
+
+  .glass {
+    padding: 0 16px !important;
   }
+}
+
+/* Fluid typography */
+h1 { font-size: clamp(16px, 4vw, 22px); }
+
+/* Touch targets */
+@media (hover: none) {
+  .btn { min-height: 44px; }
+  .card-hover:hover { transform: none; }
+}
+
+/* Fluid textarea */
+textarea.input {
+  min-height: 120px;
+  font-size: clamp(11px, 2.5vw, 13px);
 }

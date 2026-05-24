@@ -349,7 +349,7 @@ export default function App() {
   return (
     <>
       <Navbar />
-      <main style={{maxWidth:720,margin:"0 auto",padding:"32px 16px 80px"}}>
+      <main style={{maxWidth:720,margin:"0 auto",padding:"clamp(16px,4vw,32px) clamp(12px,4vw,20px) 80px"}}>
 
         {/* Backend status banner */}
         {backendStatus === "waking" && (
@@ -377,7 +377,7 @@ export default function App() {
         )}
 
         {/* Header row */}
-        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:28,flexWrap:"wrap",gap:12}}>
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:28,flexWrap:"wrap",gap:16}}>
           <div>
             <h1 style={{fontSize:20,fontWeight:600,color:"var(--text-1)",letterSpacing:-0.5}}>
               {role ? `${ROLES.find(r=>r.id===role)?.icon} ${ROLES.find(r=>r.id===role)?.label} workspace` : "What are you debugging?"}
@@ -386,7 +386,7 @@ export default function App() {
               {role ? "Add your code · describe the problem · run diagnostic" : "Select a role to personalise your workspace"}
             </p>
           </div>
-          <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+          <div className="shortcuts-hint" style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
             <kbd>⌘K</kbd><span style={{fontSize:11,color:"var(--text-3)"}}>reset</span>
             <span style={{color:"var(--border-2)",margin:"0 2px"}}>·</span>
             <kbd>⌘↵</kbd><span style={{fontSize:11,color:"var(--text-3)"}}>run</span>
