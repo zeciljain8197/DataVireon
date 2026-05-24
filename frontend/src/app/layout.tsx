@@ -5,6 +5,14 @@ import { Inter } from "next/font/google"
 
 const inter = Inter({ subsets: ["latin"] })
 
+import { Viewport } from "next"
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+}
+
 export const metadata: Metadata = {
   title: "DataVireon — AI Resolution Platform",
   description: "Role-aware AI problem resolution for data and engineering teams",

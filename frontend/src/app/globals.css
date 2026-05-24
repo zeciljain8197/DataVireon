@@ -340,3 +340,9 @@ textarea.input {
   min-height: 120px;
   font-size: clamp(11px, 2.5vw, 13px);
 }
+
+/* Navbar mobile */
+@media (max-width: 520px) {
+  .nav-links { display: none !important; }
+  .nav-signin-text { display: none; }
+}
