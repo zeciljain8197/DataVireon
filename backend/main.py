@@ -941,7 +941,19 @@ class AutoResolveRequest(BaseModel):
 @app.post("/resolve/auto")
 @limiter.limit("5/minute")
 async def resolve_auto(req: AutoResolveRequest, request: Request):
-    skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
+    # A holistic "find ALL issues" audit shouldn't be scoped to a single
+    # domain's checklist — /analyze's domain classification is a best guess
+    # from a trimmed excerpt, and gating on just that one domain (e.g.
+    # "code_quality") silently drops known-issues checklists that live under
+    # other domains (e.g. "model_health"'s leakage/div-by-zero patterns),
+    # even though the general instructions below ask for those issues too.
+    # Combine all domains' skills, same as /analyze already does.
+    all_skills = " ".join([
+        get_skill(req.role, d) for d in
+        ["pipeline", "schema_quality", "performance", "model_health", "security", "code_quality", "environment", "testing"]
+        if get_skill(req.role, d)
+    ])
+    skill_prompt = all_skills[:2500] if all_skills else ROLE_CONTEXT.get(req.role, "")
     trimmed_codebase = trim_codebase(req.codebase, 3000)
 
     # --- Call 1: diagnose + explain fixes (no patched_codebase in this call at all) ---

@@ -787,7 +787,16 @@ export default function App() {
             <div style={{display:"flex",flexDirection:"column",gap:10}}>
               {autoResult.fixes?.map((f:any,i:number)=>(
                 <div key={i} className="card-sm fade-in" style={{animationDelay:`${i*60}ms`}}>
-                  <p style={{fontSize:13,fontWeight:600,color:"var(--text-1)",marginBottom:6}}>{f.title}</p>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+                    <p style={{fontSize:13,fontWeight:600,color:"var(--text-1)",margin:0}}>{f.title}</p>
+                    {f.severity && (
+                      <span style={{fontSize:10,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",
+                        color:f.severity==="blocking"?"var(--red)":"var(--yellow)"}}>{f.severity}</span>
+                    )}
+                    {f.restructured && (
+                      <span className="badge" style={{background:"var(--bg-elevated)",color:"var(--text-3)",fontSize:10}}>restructured</span>
+                    )}
+                  </div>
                   <p style={{fontSize:12,color:"var(--text-2)",marginBottom:10}}>{f.explanation}</p>
                   {f.fixed && <div className="code-block">{f.fixed}</div>}
                 </div>
