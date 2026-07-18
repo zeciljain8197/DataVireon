@@ -428,6 +428,22 @@ def _snippet_lines(snippet: str | None) -> list[str]:
     return [_normalize_snippet_line(l) for l in (snippet or "").strip().splitlines() if l.strip()]
 
 
+_DISTINCTIVE_TOKEN_RE = _re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\"[^\"]*\"|'[^']*'")
+
+
+def _distinctive_tokens(snippet: str) -> set[str]:
+    """Identifiers and string literals from a snippet, skipping very short
+    ones (control-flow keywords like 'if'/'try' carry no signal — they're
+    everywhere). Used for a line-shape-independent presence check: models
+    frequently write NEW control-flow code (the 'fixed' field for a fix that
+    adds validation/error-handling rather than replacing broken code) as a
+    squashed, colon-chained one-liner in the fix's own JSON field, while the
+    actual patched_codebase properly formats the same logic across several
+    indented lines — line-based comparison can't survive that reshaping, but
+    the underlying identifiers and messages are unchanged either way."""
+    return {t for t in _DISTINCTIVE_TOKEN_RE.findall(snippet) if len(t) > 3}
+
+
 def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
     """Flag a fix whose underlying bug looks like it's still present in the
     final file.
@@ -438,14 +454,18 @@ def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
     multi-line wrapping, a variable renamed from e.g. X_test to
     X_test_scaled as a necessary side effect of the fix), which breaks naive
     comparison against the suggested 'fixed' text even when the underlying
-    bug is genuinely gone. Falls back to checking the 'fixed' snippet's
-    presence only when a fix has no 'original' to check against — e.g. a fix
-    that adds new code rather than replacing broken code has nothing to
-    disprove."""
+    bug is genuinely gone. Falls back to a looser, line-shape-independent
+    token check only when a fix has no 'original' to check against — e.g. a
+    fix that adds new code (validation, error handling) rather than
+    replacing broken code has nothing to disprove, and its 'fixed' field is
+    often a squashed, colon-chained one-liner in the JSON even though the
+    real patched code correctly formats the same logic across several
+    lines."""
     if not patched_codebase.strip():
         return [f.get("title", "untitled fix") for f in fixes]
 
     patched_lines = _normalize_code_lines(patched_codebase)
+    patched_tokens = _distinctive_tokens(patched_codebase)
     unreflected = []
     for fx in fixes:
         original_lines = _snippet_lines(fx.get("original"))
@@ -455,11 +475,11 @@ def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
                 unreflected.append(fx.get("title", "untitled fix"))
             continue
 
-        fixed_lines = _snippet_lines(fx.get("fixed"))
-        if not fixed_lines:
+        fixed_tokens = _distinctive_tokens(fx.get("fixed") or "")
+        if not fixed_tokens:
             continue
-        present = sum(1 for l in fixed_lines if l in patched_lines)
-        if present / len(fixed_lines) < 0.5:
+        present = sum(1 for t in fixed_tokens if t in patched_tokens)
+        if present / len(fixed_tokens) < 0.6:
             unreflected.append(fx.get("title", "untitled fix"))
     return unreflected
 
