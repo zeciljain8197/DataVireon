@@ -433,6 +433,68 @@ def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
     return missing
 
 
+def _unwrap_to_subscript_key(node: ast.AST) -> str | None:
+    """Peel off common pandas wrapper calls/attrs (.values, .astype(...),
+    .notnull(), .to_numpy(), etc.) to find an underlying df['col'] subscript,
+    returning 'col' if found. Handles chains like df['x'].notnull().astype(int)."""
+    while True:
+        if isinstance(node, ast.Subscript):
+            sl = node.slice
+            if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                return sl.value
+            return None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            node = node.func.value
+            continue
+        if isinstance(node, ast.Attribute):
+            node = node.value
+            continue
+        return None
+
+
+def find_target_leakage_features(code: str) -> list[dict]:
+    """Detect a feature assigned as a direct, uncomputed copy of whatever
+    column is used as the model's target/label (e.g. `df['x'] = df['label']`
+    where `label` was assigned to a variable named y/target/label/labels).
+    This deliberately only catches literal duplication — proxy leakage from a
+    differently-named column that's merely correlated with or a consequence
+    of the outcome (e.g. a field only populated after the outcome occurs)
+    requires real-world domain knowledge a static check of the code can't
+    derive, and isn't attempted here."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    label_columns: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if names & {"y", "target", "label", "labels"}:
+                col = _unwrap_to_subscript_key(node.value)
+                if col:
+                    label_columns.add(col)
+
+    if not label_columns:
+        return []
+
+    findings = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if not isinstance(target, ast.Subscript):
+                continue
+            target_col = _unwrap_to_subscript_key(target)
+            source_col = _unwrap_to_subscript_key(node.value)
+            if target_col and source_col and source_col in label_columns and target_col != source_col:
+                findings.append({
+                    "feature": target_col,
+                    "source_label_column": source_col,
+                    "line": getattr(node, "lineno", None),
+                })
+    return findings
+
+
 _PY_BUILTIN_NAMES = set(dir(_builtins)) | {"__name__", "__file__", "__doc__", "__all__", "self", "cls"}
 
 
@@ -1143,6 +1205,17 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         if name_issues:
             logger.warning("resolve_auto[validate]: %d potential undefined-name issue(s) in patched_codebase",
                             len(name_issues))
+
+        leakage_findings = find_target_leakage_features(patched_code)
+        for finding in leakage_findings:
+            validation_warnings.append(
+                f"Validation: feature '{finding['feature']}' (line {finding['line']}) is a direct, "
+                f"uncomputed copy of '{finding['source_label_column']}', which is used as the model's "
+                f"target — this is target leakage and will inflate reported accuracy. Remove it as a feature."
+            )
+        if leakage_findings:
+            logger.warning("resolve_auto[validate]: %d target-leakage feature(s) still in patched_codebase",
+                            len(leakage_findings))
 
     return {
         "fixes": fixes_list,
