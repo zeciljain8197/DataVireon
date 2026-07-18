@@ -408,29 +408,60 @@ def _predominant_language(fixes: list) -> str:
     return _Counter(langs).most_common(1)[0][0]
 
 
+def _normalize_snippet_line(line: str) -> str:
+    """Strip whitespace, a trailing comma, and unify quote style — enough to
+    survive the cosmetic reformatting call 2 routinely does (trailing commas
+    appearing/disappearing, single vs double quotes) without losing the
+    ability to tell a genuinely different line from a merely reformatted
+    one."""
+    line = line.strip()
+    if line.endswith(","):
+        line = line[:-1].rstrip()
+    return line.replace("'", '"')
+
+
 def _normalize_code_lines(code: str) -> set[str]:
-    return {line.strip() for line in code.strip().splitlines() if line.strip()}
+    return {_normalize_snippet_line(l) for l in code.strip().splitlines() if l.strip()}
+
+
+def _snippet_lines(snippet: str | None) -> list[str]:
+    return [_normalize_snippet_line(l) for l in (snippet or "").strip().splitlines() if l.strip()]
 
 
 def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
-    """Check whether each claimed fix actually shows up in the final file.
-    Catches the case where the diagnosis (call 1) is fine but the rewrite
-    (call 2) silently dropped or ignored one of the fixes."""
+    """Flag a fix whose underlying bug looks like it's still present in the
+    final file.
+
+    Checks for the bug's ABSENCE — the 'original' (broken) snippet no longer
+    appearing — rather than the 'fixed' snippet's exact presence. Call 2
+    legitimately renames/reformats things while restructuring (quote style,
+    multi-line wrapping, a variable renamed from e.g. X_test to
+    X_test_scaled as a necessary side effect of the fix), which breaks naive
+    comparison against the suggested 'fixed' text even when the underlying
+    bug is genuinely gone. Falls back to checking the 'fixed' snippet's
+    presence only when a fix has no 'original' to check against — e.g. a fix
+    that adds new code rather than replacing broken code has nothing to
+    disprove."""
     if not patched_codebase.strip():
         return [f.get("title", "untitled fix") for f in fixes]
+
     patched_lines = _normalize_code_lines(patched_codebase)
-    missing = []
+    unreflected = []
     for fx in fixes:
-        fixed_snippet = (fx.get("fixed") or "").strip()
-        if not fixed_snippet:
+        original_lines = _snippet_lines(fx.get("original"))
+        if original_lines:
+            still_broken = sum(1 for l in original_lines if l in patched_lines)
+            if still_broken / len(original_lines) >= 0.5:
+                unreflected.append(fx.get("title", "untitled fix"))
             continue
-        snippet_lines = [l.strip() for l in fixed_snippet.splitlines() if l.strip()]
-        if not snippet_lines:
+
+        fixed_lines = _snippet_lines(fx.get("fixed"))
+        if not fixed_lines:
             continue
-        present = sum(1 for l in snippet_lines if l in patched_lines)
-        if present / len(snippet_lines) < 0.5:
-            missing.append(fx.get("title", "untitled fix"))
-    return missing
+        present = sum(1 for l in fixed_lines if l in patched_lines)
+        if present / len(fixed_lines) < 0.5:
+            unreflected.append(fx.get("title", "untitled fix"))
+    return unreflected
 
 
 def _unwrap_to_subscript_key(node: ast.AST) -> str | None:
