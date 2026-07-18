@@ -230,7 +230,14 @@ def _scan_json_state(s: str) -> tuple[bool, int]:
     return in_string, depth
 
 
-_json_decoder = json.JSONDecoder()
+
+# strict=False tolerates raw control characters (literal \n, \t, \r) inside
+# JSON string values instead of rejecting them. When a call is asked to
+# return a whole source file as a JSON string, models frequently emit a real
+# newline byte instead of the two-character "\n" escape — the content is
+# still exactly the code we want, just under-escaped. Without this, that
+# extremely common case gets misclassified as a genuine malformed-JSON bug.
+_json_decoder = json.JSONDecoder(strict=False)
 
 def _parse_json_loose(raw: str):
     """Parse the JSON object at the start of `raw`, ignoring any trailing
@@ -244,9 +251,11 @@ def _parse_json_loose(raw: str):
 def classify_json_failure(raw: str) -> dict:
     """Determine whether an LLM response that failed to parse was truncated
     (cut off mid-token, almost always from hitting max_tokens) or is genuinely
-    malformed JSON (bad escaping, control characters, etc). These need different
-    handling: truncation means "ask for more budget / try again", malformed means
-    "the model produced broken output despite having room to finish".
+    malformed JSON (bad escape sequences, mismatched quotes, etc — NOT raw
+    control characters inside strings, which are tolerated). These need
+    different handling: truncation means "ask for more budget / try again",
+    malformed means "the model produced broken output despite having room to
+    finish".
 
     Trailing content after an otherwise-complete JSON object (e.g. a stray
     markdown fence) is tolerated and still counts as valid — raw_decode only
