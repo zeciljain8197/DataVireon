@@ -542,8 +542,14 @@ def _direct_bind_targets(stmt: ast.AST) -> set[str]:
 
 def _direct_load_names(stmt: ast.AST) -> list[tuple[str, int]]:
     """Name references `stmt` reads at its OWN scope level — skips nested
-    function/class/lambda/comprehension bodies, which are checked as their
-    own separate scopes."""
+    function/class/lambda/comprehension bodies (separate scopes), AND skips
+    the bodies of If/For/While/With/Try (same scope, but NOT same statement:
+    _collect_scope_issues already walks those bodies itself, sequentially,
+    via its own recursion — scanning them again here would flatten their
+    internal ordering and see a name's use before its binding purely because
+    both happened to live inside the same compound statement. Only each
+    compound statement's own "header" expression (the condition/iterable/
+    context-manager/exception-type) is a load at this level)."""
     found: list[tuple[str, int]] = []
 
     class _Collector(ast.NodeVisitor):
@@ -563,6 +569,24 @@ def _direct_load_names(stmt: ast.AST) -> list[tuple[str, int]]:
             pass
         def visit_GeneratorExp(self, node):
             pass
+        def visit_If(self, node):
+            self.visit(node.test)
+        def visit_While(self, node):
+            self.visit(node.test)
+        def visit_For(self, node):
+            self.visit(node.iter)
+        def visit_AsyncFor(self, node):
+            self.visit(node.iter)
+        def visit_With(self, node):
+            for item in node.items:
+                self.visit(item.context_expr)
+        def visit_AsyncWith(self, node):
+            for item in node.items:
+                self.visit(item.context_expr)
+        def visit_Try(self, node):
+            for handler in node.handlers:
+                if handler.type:
+                    self.visit(handler.type)
         def visit_Name(self, node):
             if isinstance(node.ctx, ast.Load):
                 found.append((node.id, getattr(node, "lineno", -1)))
