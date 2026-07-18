@@ -8,11 +8,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from supabase import create_client
-import httpx, os, json
+import httpx, os, json, logging, ast, builtins as _builtins
+from collections import Counter as _Counter
 import anthropic as _anthropic
 from groq import Groq as _Groq
 
 load_dotenv()
+
+logger = logging.getLogger("datavireon")
 
 app = FastAPI(title="DataVireon API")
 
@@ -38,11 +41,6 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Parse allowed origins from env (comma-separated for multiple)
 _raw_origins = os.getenv("FRONTEND_URL", "http://localhost:3000")
 _allowed_origins = [o.strip() for o in _raw_origins.split(",")]
-# Always allow localhost for development
-if "http://localhost:3000" not in _allowed_origins:
-    _allowed_origins.append("http://localhost:3000")
-# Allow all vercel preview deployments
-_allow_origin_regex = r"https://.*\.vercel\.app"
 # Always allow localhost for development
 if "http://localhost:3000" not in _allowed_origins:
     _allowed_origins.append("http://localhost:3000")
@@ -136,6 +134,12 @@ ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
+# /resolve/auto is split into two calls so each gets its own budget: fix
+# analysis/explanations vs. a full regenerated file. The patched-codebase call
+# gets by far the larger budget since it has to emit an entire file.
+AUTO_FIXES_MAX_TOKENS = int(os.getenv("AUTO_FIXES_MAX_TOKENS", "4096"))
+AUTO_PATCH_MAX_TOKENS = int(os.getenv("AUTO_PATCH_MAX_TOKENS", "8192"))
+
 async def claude_stream(messages: list, temperature: float = 0.1):
     client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
@@ -195,6 +199,87 @@ def guard_codebase(codebase: str):
         raise HTTPException(400, f"Codebase too large. Max {MAX_CODEBASE_SIZE//1000}KB allowed.")
 
 
+def _extract_json_candidate(raw: str) -> str:
+    """Drop any leading non-JSON text (markdown fences, stray commentary) before the first '{'."""
+    start = raw.find("{")
+    return raw[start:] if start != -1 else raw
+
+
+def _scan_json_state(s: str) -> tuple[bool, int]:
+    """Walk the string tracking quote/escape state and bracket depth.
+    Returns (ended_inside_a_string, unclosed_bracket_depth) — both are structural
+    proof of truncation regardless of what the JSON decoder's error message says."""
+    depth = 0
+    in_string = False
+    escape = False
+    for ch in s:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth = max(0, depth - 1)
+    return in_string, depth
+
+
+_json_decoder = json.JSONDecoder()
+
+def _parse_json_loose(raw: str):
+    """Parse the JSON object at the start of `raw`, ignoring any trailing
+    non-JSON content — e.g. a stray markdown fence the model appended despite
+    being told not to. Raises json.JSONDecodeError if no valid JSON is found
+    starting at the first '{'."""
+    candidate = _extract_json_candidate(raw)
+    obj, _end = _json_decoder.raw_decode(candidate)
+    return obj
+
+def classify_json_failure(raw: str) -> dict:
+    """Determine whether an LLM response that failed to parse was truncated
+    (cut off mid-token, almost always from hitting max_tokens) or is genuinely
+    malformed JSON (bad escaping, control characters, etc). These need different
+    handling: truncation means "ask for more budget / try again", malformed means
+    "the model produced broken output despite having room to finish".
+
+    Trailing content after an otherwise-complete JSON object (e.g. a stray
+    markdown fence) is tolerated and still counts as valid — raw_decode only
+    requires the JSON *prefix* to parse, it doesn't require the whole string
+    to be clean JSON."""
+    candidate = _extract_json_candidate(raw)
+    try:
+        _json_decoder.raw_decode(candidate)
+        return {"kind": "valid"}
+    except json.JSONDecodeError as exc:
+        # `exc` is unbound once the except block exits (Python deletes it
+        # automatically), so pull out what we need before leaving the block.
+        decoder_msg = exc.msg
+        decoder_pos = exc.pos
+
+    ended_in_string, unclosed_depth = _scan_json_state(candidate)
+    if ended_in_string or unclosed_depth > 0:
+        reason = "mid-string" if ended_in_string else f"with {unclosed_depth} unclosed bracket(s)"
+        return {
+            "kind": "truncated",
+            "detail": f"Response ended {reason} — the document is structurally incomplete, "
+                      f"consistent with hitting a max_tokens limit rather than an escaping bug.",
+            "decoder_error": decoder_msg,
+            "decoder_pos": decoder_pos,
+        }
+    return {
+        "kind": "malformed",
+        "detail": f"JSON brackets are balanced (response is complete) but content is invalid: {decoder_msg}",
+        "decoder_error": decoder_msg,
+        "decoder_pos": decoder_pos,
+    }
+
+
 import re as _re
 
 def sanitize_input(text: str, max_len: int = 50000) -> str:
@@ -231,6 +316,266 @@ async def ollama_stream(messages: list, temperature: float = 0.1):
                             yield token
                     except Exception:
                         pass
+
+# --- Non-streaming "complete" variants -------------------------------------
+# Used where we need the full response server-side before deciding what to
+# send the client (e.g. to validate JSON and tell truncation apart from a
+# genuine malformed-output bug). Each returns (text, stop_reason) so callers
+# can use the provider's own signal for "ran out of tokens" as a second,
+# stronger source of truth alongside classify_json_failure's structural scan.
+
+async def claude_complete(messages: list, temperature: float = 0.1, max_tokens: int = 4096) -> tuple[str, str | None]:
+    import asyncio
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    system = next((m["content"] for m in messages if m["role"] == "system"), "")
+    user_msgs = [m for m in messages if m["role"] != "system"]
+    loop = asyncio.get_event_loop()
+    def _sync():
+        resp = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=max_tokens,
+            system=system,
+            messages=user_msgs,
+            temperature=temperature,
+        )
+        text = "".join(b.text for b in resp.content if b.type == "text")
+        return text, resp.stop_reason
+    return await loop.run_in_executor(None, _sync)
+
+async def groq_complete(messages: list, temperature: float = 0.1, max_tokens: int = 4096) -> tuple[str, str | None]:
+    import asyncio
+    client = _Groq(api_key=GROQ_API_KEY)
+    loop = asyncio.get_event_loop()
+    def _sync():
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False,
+        )
+        choice = completion.choices[0]
+        return choice.message.content or "", choice.finish_reason
+    return await loop.run_in_executor(None, _sync)
+
+async def ollama_complete(messages: list, temperature: float = 0.1, max_tokens: int = 4096) -> tuple[str, str | None]:
+    async with httpx.AsyncClient(timeout=180) as client:
+        resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json={
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens}
+        })
+        data = resp.json()
+        text = data.get("message", {}).get("content", "")
+        # Ollama reports "length" when generation was cut off by num_predict.
+        return text, data.get("done_reason")
+
+async def ai_complete(messages: list, temperature: float = 0.1, max_tokens: int = 4096) -> tuple[str, str | None]:
+    provider = os.getenv("MODEL_PROVIDER", "ollama")
+    if provider == "claude":
+        return await claude_complete(messages, temperature, max_tokens)
+    elif provider == "groq":
+        return await groq_complete(messages, temperature, max_tokens)
+    else:
+        return await ollama_complete(messages, temperature, max_tokens)
+
+def _hit_token_limit(stop_reason: str | None) -> bool:
+    # Anthropic: "max_tokens" · Groq: "length" · Ollama: "length"
+    return stop_reason in ("max_tokens", "length")
+
+
+# --- patched_codebase validation ---------------------------------------
+# Deliberately static-only: this runs on LLM-generated code that may itself
+# be influenced by an untrusted uploaded codebase (prompt injection), so we
+# never exec()/compile-and-run it server-side. Everything here is AST/text
+# analysis. It's a heuristic advisory check, not a soundness guarantee —
+# findings are surfaced as warnings, never used to reject the response.
+
+def _predominant_language(fixes: list) -> str:
+    langs = [f.get("language", "").strip().lower() for f in fixes if f.get("language")]
+    if not langs:
+        return ""
+    return _Counter(langs).most_common(1)[0][0]
+
+
+def _normalize_code_lines(code: str) -> set[str]:
+    return {line.strip() for line in code.strip().splitlines() if line.strip()}
+
+
+def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
+    """Check whether each claimed fix actually shows up in the final file.
+    Catches the case where the diagnosis (call 1) is fine but the rewrite
+    (call 2) silently dropped or ignored one of the fixes."""
+    if not patched_codebase.strip():
+        return [f.get("title", "untitled fix") for f in fixes]
+    patched_lines = _normalize_code_lines(patched_codebase)
+    missing = []
+    for fx in fixes:
+        fixed_snippet = (fx.get("fixed") or "").strip()
+        if not fixed_snippet:
+            continue
+        snippet_lines = [l.strip() for l in fixed_snippet.splitlines() if l.strip()]
+        if not snippet_lines:
+            continue
+        present = sum(1 for l in snippet_lines if l in patched_lines)
+        if present / len(snippet_lines) < 0.5:
+            missing.append(fx.get("title", "untitled fix"))
+    return missing
+
+
+_PY_BUILTIN_NAMES = set(dir(_builtins)) | {"__name__", "__file__", "__doc__", "__all__", "self", "cls"}
+
+
+def _direct_bind_targets(stmt: ast.AST) -> set[str]:
+    """Names `stmt` binds at its OWN scope level — not names bound inside any
+    nested function/class/lambda/comprehension body it contains."""
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {stmt.name}
+    names: set[str] = set()
+
+    class _Collector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node):
+            names.add(node.name)
+        def visit_AsyncFunctionDef(self, node):
+            names.add(node.name)
+        def visit_ClassDef(self, node):
+            names.add(node.name)
+        def visit_Lambda(self, node):
+            pass
+        def visit_ListComp(self, node):
+            pass
+        def visit_SetComp(self, node):
+            pass
+        def visit_DictComp(self, node):
+            pass
+        def visit_GeneratorExp(self, node):
+            pass
+        def visit_Name(self, node):
+            if isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+        def visit_Import(self, node):
+            for alias in node.names:
+                names.add((alias.asname or alias.name).split(".")[0])
+        def visit_ImportFrom(self, node):
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+        def visit_ExceptHandler(self, node):
+            if node.name:
+                names.add(node.name)
+            self.generic_visit(node)
+
+    _Collector().visit(stmt)
+    return names
+
+
+def _direct_load_names(stmt: ast.AST) -> list[tuple[str, int]]:
+    """Name references `stmt` reads at its OWN scope level — skips nested
+    function/class/lambda/comprehension bodies, which are checked as their
+    own separate scopes."""
+    found: list[tuple[str, int]] = []
+
+    class _Collector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node):
+            pass
+        def visit_AsyncFunctionDef(self, node):
+            pass
+        def visit_ClassDef(self, node):
+            pass
+        def visit_Lambda(self, node):
+            pass
+        def visit_ListComp(self, node):
+            pass
+        def visit_SetComp(self, node):
+            pass
+        def visit_DictComp(self, node):
+            pass
+        def visit_GeneratorExp(self, node):
+            pass
+        def visit_Name(self, node):
+            if isinstance(node.ctx, ast.Load):
+                found.append((node.id, getattr(node, "lineno", -1)))
+
+    _Collector().visit(stmt)
+    return found
+
+
+def _module_level_names(tree: ast.Module) -> set[str]:
+    """Everything bound directly at module top-level, or one level inside an
+    if/for/while/try wrapping the top level — treated as 'eventually
+    available' for nested function bodies (closures/globals resolve at call
+    time, not def time, so forward references across functions are fine)."""
+    names: set[str] = set()
+    for stmt in tree.body:
+        names |= _direct_bind_targets(stmt)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue  # don't leak this scope's internals into "available everywhere"
+        for attr in ("body", "orelse", "finalbody"):
+            for sub in getattr(stmt, attr, None) or []:
+                names |= _direct_bind_targets(sub)
+        if isinstance(stmt, ast.Try):
+            for handler in stmt.handlers:
+                for sub in handler.body:
+                    names |= _direct_bind_targets(sub)
+    return names
+
+
+def _collect_scope_issues(body: list, outer_available: set, scope_label: str,
+                           module_names: set, issues: list) -> None:
+    bound: set = set()
+    for stmt in body:
+        for name, line in _direct_load_names(stmt):
+            if name not in bound and name not in outer_available and name not in _PY_BUILTIN_NAMES:
+                issues.append({"name": name, "line": line, "scope": scope_label})
+        bound |= _direct_bind_targets(stmt)
+
+        for attr in ("body", "orelse", "finalbody"):
+            sub_body = getattr(stmt, attr, None)
+            if sub_body and not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                _collect_scope_issues(sub_body, outer_available | bound, scope_label, module_names, issues)
+
+        if isinstance(stmt, ast.Try):
+            for handler in stmt.handlers:
+                _collect_scope_issues(handler.body, outer_available | bound, scope_label, module_names, issues)
+
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fn_available = outer_available | bound | module_names
+            fn_available |= {a.arg for a in stmt.args.args} | {a.arg for a in stmt.args.kwonlyargs}
+            if stmt.args.vararg:
+                fn_available.add(stmt.args.vararg.arg)
+            if stmt.args.kwarg:
+                fn_available.add(stmt.args.kwarg.arg)
+            if stmt.args.posonlyargs:
+                fn_available |= {a.arg for a in stmt.args.posonlyargs}
+            nested_label = f"{scope_label}.{stmt.name}" if scope_label != "<module>" else stmt.name
+            _collect_scope_issues(stmt.body, fn_available, nested_label, module_names, issues)
+
+
+def check_undefined_name_usage(code: str) -> list[dict]:
+    """Best-effort static check for the exact failure mode a mis-applied
+    'restructured' fix produces: a variable used before it's assigned at that
+    point in execution (e.g. X_train referenced before train_test_split
+    actually runs earlier in the same function). Never executes the code —
+    heuristic only, so it can both under- and over-report on dynamic code
+    (globals()/exec/star-imports); treat findings as "verify manually", not
+    proof of a bug."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return [{"kind": "syntax_error", "message": str(e), "line": e.lineno}]
+
+    module_names = _module_level_names(tree)
+    issues: list[dict] = []
+    _collect_scope_issues(tree.body, set(), "<module>", module_names, issues)
+
+    seen = set()
+    deduped = []
+    for issue in issues:
+        key = (issue["name"], issue["scope"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(issue)
+    return deduped
 
 @app.get("/health")
 def health():
@@ -597,38 +942,180 @@ class AutoResolveRequest(BaseModel):
 @limiter.limit("5/minute")
 async def resolve_auto(req: AutoResolveRequest, request: Request):
     skill_prompt = get_skill(req.role, req.diagnostic.get("domain", ""))
+    trimmed_codebase = trim_codebase(req.codebase, 3000)
 
-    system_prompt = (
+    # --- Call 1: diagnose + explain fixes (no patched_codebase in this call at all) ---
+    fixes_system_prompt = (
         (skill_prompt + "\n\n") if skill_prompt else ""
     ) + (
-        "You are DataVireon in fully automatic resolution mode.\n"
-        "Analyze the codebase and apply ALL necessary fixes at once.\n"
+        "You are DataVireon in fully automatic resolution mode (step 1 of 2: diagnosis).\n"
+        "Analyze the entire codebase holistically — including control flow and "
+        "variable lifetime across functions — before proposing any fix. "
+        "Identify ALL issues: syntax errors, runtime errors, logic bugs, "
+        "data leakage, incorrect metrics, and structural/ordering problems.\n"
+        "\n"
+        "If a correct fix requires reordering logic, merging functions, or "
+        "changing the sequence of operations (e.g. splitting data before "
+        "fitting a transformer, not after), say so precisely in 'explanation' — "
+        "name the function(s) and exactly where the reordering must happen. "
+        "This description will be handed to a second step that rewrites the "
+        "full file, so it must be exact. Set 'restructured': true on that fix.\n"
+        "\n"
+        "Classify severity as 'blocking' (prevents execution: syntax errors, "
+        "NameError, invalid arguments) or 'logic' (runs but produces "
+        "wrong/misleading results: leakage, wrong metric, wrong split).\n"
+        "\n"
         "Return ONLY JSON:\n"
         '{"fixes":['
         '{"title":"fix title",'
-        '"explanation":"what was wrong and why this fixes it",'
+        '"severity":"blocking|logic",'
+        '"restructured":true|false,'
+        '"explanation":"what was wrong, why this fixes it, and — if restructured — exactly where/how the code must be reordered",'
         '"original":"original code snippet",'
         '"fixed":"corrected code snippet",'
         '"language":"python|sql|yaml|etc"}],'
         '"summary":"overall summary of all changes made",'
-        '"patched_codebase":"the complete fixed codebase",'
-        '"warnings":["any caveats or things to verify"]}'
+        '"warnings":["any caveats, assumptions, or things to verify manually"]}'
+        "\nDo NOT include a patched_codebase field — that is generated in a separate step."
         "\nNo markdown. No text outside JSON."
     )
-    user_prompt = (
+    fixes_user_prompt = (
         "Role: " + req.role.replace("_", " ") + "\n"
         "Problem: " + req.problem + "\n"
         "Diagnostic: " + json.dumps(req.diagnostic) + "\n\n"
-        "Codebase:\n" + trim_codebase(req.codebase, 3000) + "\n\n"
-        "Apply all necessary fixes and return the complete patched codebase."
+        "Codebase:\n" + trimmed_codebase + "\n\n"
+        "Identify and explain all necessary fixes."
     )
-    return StreamingResponse(
-        await ai_stream([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ], temperature=0.1),
-        media_type="text/plain",
+    fixes_text, fixes_stop = await ai_complete(
+        [
+            {"role": "system", "content": fixes_system_prompt},
+            {"role": "user", "content": fixes_user_prompt},
+        ],
+        temperature=0.1,
+        max_tokens=AUTO_FIXES_MAX_TOKENS,
     )
+    fixes_check = classify_json_failure(fixes_text)
+    if fixes_check["kind"] != "valid":
+        if fixes_check["kind"] == "truncated" or _hit_token_limit(fixes_stop):
+            logger.warning(
+                "resolve_auto[fixes]: truncated (stop_reason=%s, chars=%d): %s",
+                fixes_stop, len(fixes_text), fixes_check.get("detail"),
+            )
+            raise HTTPException(502, detail={
+                "error": "truncated_response",
+                "stage": "fixes",
+                "message": "The fix analysis was cut off before finishing (hit the token limit). "
+                           "Try again, or with a smaller codebase.",
+                "stop_reason": fixes_stop,
+            })
+        logger.error("resolve_auto[fixes]: malformed JSON: %s", fixes_check.get("detail"))
+        raise HTTPException(502, detail={
+            "error": "malformed_json",
+            "stage": "fixes",
+            "message": f"The model returned invalid JSON: {fixes_check['detail']}",
+        })
+    fixes_data = _parse_json_loose(fixes_text)
+
+    # --- Call 2: given the fixes above, regenerate the full patched file ---
+    patch_system_prompt = (
+        "You are DataVireon in fully automatic resolution mode (step 2 of 2: patched file).\n"
+        "The following fixes were already identified for this codebase — apply ALL of "
+        "them together so the result is a single coherent, runnable program:\n"
+        + json.dumps(fixes_data.get("fixes", [])) + "\n\n"
+        "CRITICAL CONSTRAINT:\n"
+        "1. Trace the execution order of the patched code mentally, top to bottom.\n"
+        "2. For every variable used, confirm it is defined and in scope at that "
+        "point in the patched flow — not just in isolation.\n"
+        "3. Where a fix above has 'restructured': true, actually move/reorder that "
+        "logic in the file — do not just patch the isolated snippet in place.\n"
+        "4. The output must be the complete file, self-consistent, and runnable "
+        "end-to-end — never a concatenation of independently valid but mutually "
+        "incompatible snippets.\n"
+        "\n"
+        "Return ONLY JSON:\n"
+        '{"patched_codebase":"the complete fixed codebase, verified to run end-to-end",'
+        '"warnings":["any additional caveats from applying these fixes together"]}'
+        "\nNo markdown. No text outside JSON."
+    )
+    patch_user_prompt = (
+        "Codebase:\n" + trimmed_codebase + "\n\n"
+        "Apply all the fixes listed above and return the complete patched codebase."
+    )
+    patch_text, patch_stop = await ai_complete(
+        [
+            {"role": "system", "content": patch_system_prompt},
+            {"role": "user", "content": patch_user_prompt},
+        ],
+        temperature=0.1,
+        max_tokens=AUTO_PATCH_MAX_TOKENS,
+    )
+    patch_check = classify_json_failure(patch_text)
+    if patch_check["kind"] != "valid":
+        # Call 1 already succeeded — don't throw that work away.
+        partial = {
+            "fixes": fixes_data.get("fixes", []),
+            "summary": fixes_data.get("summary", ""),
+        }
+        if patch_check["kind"] == "truncated" or _hit_token_limit(patch_stop):
+            logger.warning(
+                "resolve_auto[patch]: truncated (stop_reason=%s, chars=%d): %s",
+                patch_stop, len(patch_text), patch_check.get("detail"),
+            )
+            raise HTTPException(502, detail={
+                "error": "truncated_response",
+                "stage": "patch",
+                "message": "The patched codebase was cut off before finishing (hit the token limit). "
+                           "The fixes above are valid — try re-running, or reduce codebase size.",
+                "stop_reason": patch_stop,
+                **partial,
+            })
+        logger.error("resolve_auto[patch]: malformed JSON: %s", patch_check.get("detail"))
+        raise HTTPException(502, detail={
+            "error": "malformed_json",
+            "stage": "patch",
+            "message": f"The model returned invalid JSON for the patched codebase: {patch_check['detail']}",
+            **partial,
+        })
+    patch_data = _parse_json_loose(patch_text)
+    fixes_list = fixes_data.get("fixes", [])
+    patched_code = patch_data.get("patched_codebase", "")
+
+    # --- Validate: does patched_codebase actually reflect the claimed fixes,
+    # and does it look like it'll run without a NameError from ordering? ---
+    validation_warnings: list[str] = []
+
+    unreflected = find_unreflected_fixes(fixes_list, patched_code)
+    if unreflected:
+        validation_warnings.append(
+            "Validation: the patched codebase doesn't clearly contain the fix for: "
+            + "; ".join(unreflected) + ". The rewrite step may not have applied it — review manually."
+        )
+        logger.warning("resolve_auto[validate]: %d fix(es) not reflected in patched_codebase: %s",
+                        len(unreflected), unreflected)
+
+    if _predominant_language(fixes_list) == "python" and patched_code.strip():
+        name_issues = check_undefined_name_usage(patched_code)
+        for issue in name_issues:
+            if issue.get("kind") == "syntax_error":
+                validation_warnings.append(
+                    f"Validation: patched_codebase has a Python syntax error at line {issue.get('line')}: {issue.get('message')}"
+                )
+            else:
+                validation_warnings.append(
+                    f"Validation: '{issue['name']}' is used in {issue['scope']} (line {issue['line']}) "
+                    f"before it's clearly defined there — possible NameError if a restructured fix "
+                    f"wasn't fully applied. Verify manually."
+                )
+        if name_issues:
+            logger.warning("resolve_auto[validate]: %d potential undefined-name issue(s) in patched_codebase",
+                            len(name_issues))
+
+    return {
+        "fixes": fixes_list,
+        "summary": fixes_data.get("summary", ""),
+        "warnings": (fixes_data.get("warnings") or []) + (patch_data.get("warnings") or []) + validation_warnings,
+        "patched_codebase": patched_code,
+    }
 
 class SchemaAnalyzeRequest(BaseModel):
     supabase_url: str

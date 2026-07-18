@@ -264,25 +264,36 @@ export default function App() {
 
   async function runAuto() {
     setAutoLoading(true);setAutoResult(null)
+    if(abortRef.current) abortRef.current.abort()
+    abortRef.current = new AbortController()
     try {
-      await stream(API+"/resolve/auto",{codebase,role,problem,diagnostic,user_id:userId,session_id:sessionId},
-        (json)=>{
-          try {
-            setAutoResult(JSON.parse(json))
-            setActiveResult("auto")
-          } catch(e) {
-            // JSON parse failed — model returned code with unescaped characters
-            // Extract what we can
-            const summaryMatch = json.match(/"summary"\s*:\s*"([^"\\]*(\\.[^"\\]*)*)"/)
-            setAutoResult({
-              summary: summaryMatch?.[1] || "Fixes applied — JSON parsing failed due to special characters in code",
-              warnings: ["The patched codebase contained special characters that broke JSON serialization. Copy the raw output below."],
-              fixes: [],
-              patched_codebase: json.slice(0, 4000)
-            })
-            setActiveResult("auto")
-          }
+      const res = await fetch(API+"/resolve/auto",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({codebase,role,problem,diagnostic,user_id:userId,session_id:sessionId}),
+        signal:abortRef.current.signal,
+      })
+      const data = await res.json()
+      if(!res.ok) {
+        // Backend now tells us WHY: truncated (hit the token limit) vs malformed
+        // JSON (a real bug), and which of the two generation steps failed.
+        const detail = data.detail || {}
+        const truncated = detail.error === "truncated_response"
+        const stageLabel = detail.stage === "patch" ? "regenerating the patched file" : "analyzing the fixes"
+        setAutoResult({
+          summary: detail.summary || "",
+          warnings: [
+            truncated
+              ? `Generation was cut off while ${stageLabel} (hit the token limit). ${detail.message || ""}`
+              : `The model returned invalid JSON while ${stageLabel}: ${detail.message || ""}`
+          ],
+          fixes: detail.fixes || [],
+          patched_codebase: "",
         })
+      } else {
+        setAutoResult(data)
+      }
+      setActiveResult("auto")
     } catch(e:any){if(e.name!=="AbortError")console.error(e)}
     setAutoLoading(false)
   }
