@@ -602,17 +602,41 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         (skill_prompt + "\n\n") if skill_prompt else ""
     ) + (
         "You are DataVireon in fully automatic resolution mode.\n"
-        "Analyze the codebase and apply ALL necessary fixes at once.\n"
+        "Analyze the entire codebase holistically — including control flow and "
+        "variable lifetime across functions — before proposing any fix. "
+        "Identify ALL issues: syntax errors, runtime errors, logic bugs, "
+        "data leakage, incorrect metrics, and structural/ordering problems.\n"
+        "\n"
+        "CRITICAL CONSTRAINT: Individual fixes must compose into a single "
+        "coherent, runnable program. Before finalizing:\n"
+        "1. Trace the execution order of the patched code mentally, top to bottom.\n"
+        "2. For every variable used in a fix, confirm it is defined and in scope "
+        "at that point in the patched flow — not just in isolation.\n"
+        "3. If a correct fix requires reordering logic, merging functions, or "
+        "changing the sequence of operations (e.g. splitting data before "
+        "fitting a transformer, not after), restructure the code accordingly "
+        "rather than patching lines in place. Note this in 'explanation' and "
+        "set 'restructured': true on that fix.\n"
+        "4. 'patched_codebase' must be the complete, self-consistent file that "
+        "actually runs end-to-end — never a concatenation of independently "
+        "valid but mutually incompatible snippets.\n"
+        "\n"
+        "For each fix, also classify severity as 'blocking' (prevents execution: "
+        "syntax errors, NameError, invalid arguments) or 'logic' (runs but "
+        "produces wrong/misleading results: leakage, wrong metric, wrong split).\n"
+        "\n"
         "Return ONLY JSON:\n"
         '{"fixes":['
         '{"title":"fix title",'
-        '"explanation":"what was wrong and why this fixes it",'
+        '"severity":"blocking|logic",'
+        '"restructured":true|false,'
+        '"explanation":"what was wrong, why this fixes it, and what else it touches",'
         '"original":"original code snippet",'
         '"fixed":"corrected code snippet",'
         '"language":"python|sql|yaml|etc"}],'
         '"summary":"overall summary of all changes made",'
-        '"patched_codebase":"the complete fixed codebase",'
-        '"warnings":["any caveats or things to verify"]}'
+        '"patched_codebase":"the complete fixed codebase, verified to run end-to-end",'
+        '"warnings":["any caveats, assumptions, or things to verify manually"]}'
         "\nNo markdown. No text outside JSON."
     )
     user_prompt = (
