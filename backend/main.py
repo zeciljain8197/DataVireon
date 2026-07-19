@@ -554,6 +554,83 @@ def find_target_leakage_features(code: str) -> list[dict]:
     return findings
 
 
+def _root_name_of_expr(node: ast.AST) -> str | None:
+    """If node is a Name, or a chain of Subscript/Attribute access rooted at
+    one (e.g. filtered['revenue'], filtered.loc), return that root name."""
+    while True:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Subscript):
+            node = node.value
+            continue
+        if isinstance(node, ast.Attribute):
+            node = node.value
+            continue
+        return None
+
+
+def _is_boolean_filter_subscript(node: ast.AST) -> bool:
+    """True if node is `something[Compare(...)]` or `something[BoolOp(...)]`
+    — e.g. df[df['region'] == region] or df[(a) & (b)] — which indicates row
+    filtering, not column selection (df['col']) or positional slicing
+    (df[1:5])."""
+    return isinstance(node, ast.Subscript) and isinstance(node.slice, (ast.Compare, ast.BoolOp))
+
+
+def find_positional_index_after_filter(code: str) -> list[dict]:
+    """Detect an integer-literal subscript (e.g. filtered['revenue'][0]) on a
+    variable that was assigned via row filtering (e.g. filtered =
+    df[df['region'] == region]) anywhere in the file. Bracket indexing by an
+    integer is a LABEL lookup in pandas, not a positional one — after a
+    filter, surviving rows keep their original index, so label 0 may not
+    exist even when the result is non-empty, causing an intermittent
+    KeyError. .iloc[0] (or .loc/.at/.iat, used deliberately) is exempted —
+    only bare bracket access is flagged.
+
+    Deliberately whole-file rather than per-function-scoped, and only
+    matches the exact shape above (not .query(), boolean masks built in a
+    separate variable, etc.) — this is a narrower, lower-precision heuristic
+    than the other checks here on purpose: whether an index is contiguous is
+    a runtime property no static check can fully verify, so this errs
+    toward a specific, well-understood shape rather than broad coverage."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    filtered_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_boolean_filter_subscript(node.value):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    filtered_names.add(target.id)
+
+    if not filtered_names:
+        return []
+
+    findings = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript):
+            continue
+        sl = node.slice
+        if not (isinstance(sl, ast.Constant) and isinstance(sl.value, int) and not isinstance(sl.value, bool)):
+            continue
+        if isinstance(node.value, ast.Attribute) and node.value.attr in ("iloc", "loc", "at", "iat"):
+            continue
+        root = _root_name_of_expr(node.value)
+        if root in filtered_names:
+            findings.append({"name": root, "line": getattr(node, "lineno", None)})
+
+    seen = set()
+    deduped = []
+    for f in findings:
+        key = (f["name"], f["line"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(f)
+    return deduped
+
+
 _PY_BUILTIN_NAMES = set(dir(_builtins)) | {"__name__", "__file__", "__doc__", "__all__", "self", "cls"}
 
 
@@ -1311,6 +1388,17 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         if leakage_findings:
             logger.warning("resolve_auto[validate]: %d target-leakage feature(s) still in patched_codebase",
                             len(leakage_findings))
+
+        index_findings = find_positional_index_after_filter(patched_code)
+        for finding in index_findings:
+            validation_warnings.append(
+                f"Validation: '{finding['name']}' (line {finding['line']}) was assigned from a row filter "
+                f"and is then indexed with a plain integer — that's a label lookup, not positional, and can "
+                f"raise KeyError even when the filtered result is non-empty. Use .iloc[...] instead."
+            )
+        if index_findings:
+            logger.warning("resolve_auto[validate]: %d label-vs-positional indexing issue(s) in patched_codebase",
+                            len(index_findings))
 
     return {
         "fixes": fixes_list,
