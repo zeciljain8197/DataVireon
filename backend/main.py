@@ -1040,6 +1040,32 @@ def _module_level_names(tree: ast.Module) -> set[str]:
     return names
 
 
+def _global_nonlocal_names(fn_node: ast.AST) -> set:
+    """Names this function declares via `global`/`nonlocal` anywhere in its
+    own body (not inside a nested function/class, which would be a
+    different scope's declaration)."""
+    names: set = set()
+
+    class _Collector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node):
+            pass
+        def visit_AsyncFunctionDef(self, node):
+            pass
+        def visit_ClassDef(self, node):
+            pass
+        def visit_Lambda(self, node):
+            pass
+        def visit_Global(self, node):
+            names.update(node.names)
+        def visit_Nonlocal(self, node):
+            names.update(node.names)
+
+    collector = _Collector()
+    for stmt in fn_node.body:
+        collector.visit(stmt)
+    return names
+
+
 def _collect_scope_issues(body: list, outer_available: set, scope_label: str,
                            module_names: set, issues: list) -> None:
     bound: set = set()
@@ -1059,7 +1085,17 @@ def _collect_scope_issues(body: list, outer_available: set, scope_label: str,
                 _collect_scope_issues(handler.body, outer_available | bound, scope_label, module_names, issues)
 
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            fn_available = outer_available | bound | module_names
+            # A name this function assigns to ANYWHERE in its own body is a
+            # local for the function's ENTIRE body, per Python's actual
+            # scoping rules — even on lines before that assignment — unless
+            # the function declares it `global`/`nonlocal`. Without that
+            # exclusion, a name that's also bound at module level (or in an
+            # enclosing function) would look available from line 1 even
+            # when reading it before the local assignment is a real
+            # UnboundLocalError.
+            declared_global_nonlocal = _global_nonlocal_names(stmt)
+            shadowed_by_local_assignment = _module_level_names(stmt) - declared_global_nonlocal
+            fn_available = (outer_available | bound | module_names) - shadowed_by_local_assignment
             fn_available |= {a.arg for a in stmt.args.args} | {a.arg for a in stmt.args.kwonlyargs}
             if stmt.args.vararg:
                 fn_available.add(stmt.args.vararg.arg)
