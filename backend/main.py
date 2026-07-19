@@ -631,6 +631,72 @@ def find_positional_index_after_filter(code: str) -> list[dict]:
     return deduped
 
 
+_MUTATING_METHODS = {
+    "append", "extend", "insert", "remove", "pop", "clear",
+    "update", "add", "discard", "sort", "reverse", "setdefault", "popitem",
+}
+
+
+def _param_is_mutated(param_name: str, fn_node: ast.AST) -> bool:
+    """True if `param_name` is mutated anywhere in fn_node — a mutating
+    method call (param.append(...)), item assignment (param[k] = v), or a
+    bare augmented assignment (param += [...], which for list/dict/set
+    mutates in place via __iadd__ rather than rebinding)."""
+    for node in ast.walk(fn_node):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == param_name
+                and node.func.attr in _MUTATING_METHODS):
+            return True
+        if isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) and t.value.id == param_name:
+                    return True
+        if (isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
+                and node.target.id == param_name):
+            return True
+    return False
+
+
+def _is_mutable_default(node: ast.AST) -> bool:
+    """True for a mutable-literal default ([], {}, {1,2}) or an equivalent
+    constructor call (list(), dict(), set()) — Python has no empty-set
+    literal, so set() is the only way to write one, and a default value is
+    evaluated exactly once at def-time either way, so a constructor call is
+    just as shared/mutable as the literal form."""
+    if isinstance(node, (ast.List, ast.Dict, ast.Set)):
+        return True
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("list", "dict", "set")
+
+
+def find_mutable_default_arguments(code: str) -> list[dict]:
+    """Detect a function/method parameter whose default value is a mutable
+    list/dict/set that's also mutated within the function body — the
+    classic Python gotcha where the same default object is shared and
+    mutated across every call that doesn't pass its own argument. Only
+    flags parameters that are actually mutated, not merely read, so this is
+    a "will misbehave" signal rather than a pure style nitpick — a mutable
+    default that's never touched can't leak state."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    findings = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = node.args
+        positional = args.posonlyargs + args.args
+        paired = list(zip(positional[len(positional) - len(args.defaults):], args.defaults)) if args.defaults else []
+        paired += [(p, d) for p, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None]
+
+        for param, default in paired:
+            if _is_mutable_default(default) and _param_is_mutated(param.arg, node):
+                findings.append({"function": node.name, "param": param.arg, "line": getattr(node, "lineno", None)})
+    return findings
+
+
 _PY_BUILTIN_NAMES = set(dir(_builtins)) | {"__name__", "__file__", "__doc__", "__all__", "self", "cls"}
 
 
@@ -1221,6 +1287,15 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         "NameError, invalid arguments) or 'logic' (runs but produces "
         "wrong/misleading results: leakage, wrong metric, wrong split).\n"
         "\n"
+        "Before writing 'explanation', re-check it against the actual "
+        "'original'/'fixed' snippets: state the specific mechanism that's "
+        "wrong (which variable holds a stale/wrong value, which collection "
+        "vs. which index, which check is missing) rather than a generic-"
+        "sounding justification that doesn't match what the snippets show. "
+        "E.g. if the bug is indexing into the wrong collection, say that — "
+        "don't default to 'this would raise an error on empty input' unless "
+        "the code you're changing is actually missing that check.\n"
+        "\n"
         "Return ONLY JSON:\n"
         '{"fixes":['
         '{"title":"fix title",'
@@ -1399,6 +1474,18 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         if index_findings:
             logger.warning("resolve_auto[validate]: %d label-vs-positional indexing issue(s) in patched_codebase",
                             len(index_findings))
+
+        mutable_default_findings = find_mutable_default_arguments(patched_code)
+        for finding in mutable_default_findings:
+            validation_warnings.append(
+                f"Validation: '{finding['param']}' in {finding['function']} (line {finding['line']}) defaults "
+                f"to a mutable list/dict/set and is mutated in the function body — that default is shared "
+                f"and accumulates across every call that doesn't pass its own argument. "
+                f"Use None as the default and create the mutable value inside the function instead."
+            )
+        if mutable_default_findings:
+            logger.warning("resolve_auto[validate]: %d mutable-default-argument issue(s) in patched_codebase",
+                            len(mutable_default_findings))
 
     return {
         "fixes": fixes_list,
