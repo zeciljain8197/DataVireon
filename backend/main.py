@@ -1348,11 +1348,21 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
     fixes_data = _parse_json_loose(fixes_text)
 
     # --- Call 2: given the fixes above, regenerate the full patched file ---
+    # Only pass what call 2 needs to decide WHAT to do and WHY — not the
+    # original/fixed snippets, which were for the human-facing fix cards and
+    # are redundant here: call 2 already gets the complete original file
+    # below, so re-embedding isolated before/after lines just inflates this
+    # prompt without adding information, eating into the budget available
+    # for the actual output (the full regenerated file).
+    condensed_fixes = [
+        {k: v for k, v in fx.items() if k in ("title", "severity", "restructured", "explanation", "language")}
+        for fx in fixes_data.get("fixes", [])
+    ]
     patch_system_prompt = (
         "You are DataVireon in fully automatic resolution mode (step 2 of 2: patched file).\n"
         "The following fixes were already identified for this codebase — apply ALL of "
         "them together so the result is a single coherent, runnable program:\n"
-        + json.dumps(fixes_data.get("fixes", [])) + "\n\n"
+        + json.dumps(condensed_fixes) + "\n\n"
         "CRITICAL CONSTRAINT:\n"
         "1. Trace the execution order of the patched code mentally, top to bottom.\n"
         "2. For every variable used, confirm it is defined and in scope at that "
