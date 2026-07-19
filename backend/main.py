@@ -460,7 +460,15 @@ def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
     replacing broken code has nothing to disprove, and its 'fixed' field is
     often a squashed, colon-chained one-liner in the JSON even though the
     real patched code correctly formats the same logic across several
-    lines."""
+    lines.
+
+    Requires ALL of 'original's lines to still be present to call something
+    "still broken", not just a majority — a multi-line 'original' commonly
+    includes a line of unchanged surrounding context alongside the actual
+    buggy line (e.g. the filter-setup line above a bad indexing call), and a
+    majority-vote threshold flags that shared context as if the bug itself
+    persisted. Requiring every line to match means even one changed line
+    (almost always the fix itself) is enough to clear it."""
     if not patched_codebase.strip():
         return [f.get("title", "untitled fix") for f in fixes]
 
@@ -470,8 +478,8 @@ def find_unreflected_fixes(fixes: list, patched_codebase: str) -> list[str]:
     for fx in fixes:
         original_lines = _snippet_lines(fx.get("original"))
         if original_lines:
-            still_broken = sum(1 for l in original_lines if l in patched_lines)
-            if still_broken / len(original_lines) >= 0.5:
+            still_broken = all(l in patched_lines for l in original_lines)
+            if still_broken:
                 unreflected.append(fx.get("title", "untitled fix"))
             continue
 
