@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from supabase import create_client
-import httpx, os, json, logging, ast, builtins as _builtins
+import httpx, os, json, logging, ast, builtins as _builtins, re as _re
 from collections import Counter as _Counter
 import anthropic as _anthropic
 from groq import Groq as _Groq
@@ -64,21 +64,191 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY or SUPABASE_KEY)
 
-def trim_codebase(code: str, max_chars: int = 4000) -> str:
-    """Trim codebase intelligently — keep imports and function signatures."""
-    if len(code) <= max_chars:
-        return code
-    lines = code.split("\n")
-    # Always keep first 20 lines (imports) and last 20 lines
+_TOP_LEVEL_DEF_RE = _re.compile(r"^(async\s+def\s+\w|def\s+\w|class\s+\w)")
+
+
+def _split_into_chunks(lines: list) -> tuple:
+    """Split source lines into a header (everything before the first
+    top-level def/class) and a list of (name, chunk_lines) for each
+    top-level function/class. Uses column-0 line scanning rather than a
+    full ast.parse — this has to keep working even when the file has a
+    syntax error elsewhere, since files that need this tool's help commonly
+    do (that's the whole point of the tool)."""
+    starts = []
+    for i, line in enumerate(lines):
+        if line[:1] not in (" ", "\t", "") and _TOP_LEVEL_DEF_RE.match(line):
+            start = i
+            j = i - 1
+            while j >= 0 and lines[j].startswith("@"):
+                start = j
+                j -= 1
+            starts.append(start)
+    starts = sorted(set(starts))
+
+    if not starts:
+        return lines, []
+
+    header = lines[:starts[0]]
+    chunks = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        chunk_lines = lines[start:end]
+        name_line = next((l for l in chunk_lines if _TOP_LEVEL_DEF_RE.match(l)), chunk_lines[0])
+        chunks.append((name_line.strip(), chunk_lines))
+    return header, chunks
+
+
+def _cut_at_line_boundary(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    cut = text.rfind("\n", 0, max_chars)
+    return text[:cut] if cut != -1 else text[:max_chars]
+
+
+def _fallback_trim(lines: list, max_chars: int) -> str:
+    """Head/tail/sample trim for content with no detected def/class
+    structure (non-Python, or a flat script). Unlike the old
+    implementation, this never duplicates content when there are too few
+    "lines" to sample sensibly (e.g. one enormous minified single-line
+    file — head and tail would otherwise both resolve to that same one
+    line) and never cuts mid-line."""
+    if len(lines) <= 40:
+        return _cut_at_line_boundary("\n".join(lines), max_chars)
     head = lines[:20]
     tail = lines[-20:]
     middle = lines[20:-20]
-    # Sample middle evenly
     if middle:
         step = max(1, len(middle) // 20)
         middle = middle[::step][:20]
     trimmed = "\n".join(head + ["# ... (trimmed for context) ..."] + middle + tail)
-    return trimmed[:max_chars]
+    return _cut_at_line_boundary(trimmed, max_chars)
+
+
+_RELEVANCE_STOP_WORDS = {
+    "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being",
+    "this", "that", "these", "those", "it", "its", "our", "your", "their", "his", "her",
+    "to", "of", "in", "on", "at", "by", "for", "with", "from", "as", "into", "onto",
+    "we", "you", "they", "he", "she", "them", "us", "me", "my", "if", "when", "while",
+    "not", "no", "do", "does", "did", "done", "has", "have", "had", "will", "would", "can",
+    "could", "should", "may", "might", "must", "also", "then", "than", "some", "any", "all",
+    "def", "self", "return", "none", "true", "false",
+}
+_WORD_RE = _re.compile(r"[a-zA-Z]+")
+
+
+def _meaningful_words(text: str) -> set:
+    """Split on any non-letter (including underscores) so snake_case
+    identifiers decompose into their constituent words — train_test_split
+    needs to match "splitting" in a natural-language problem statement, and
+    a whole-identifier token match never would. Drops stop words and very
+    short words so common filler ("the", "an", "if") can't dominate the
+    signal over domain-relevant terms (leakage, split, precision)."""
+    return {w for w in _WORD_RE.findall(text.lower()) if len(w) > 2 and w not in _RELEVANCE_STOP_WORDS}
+
+
+def smart_trim_codebase(code: str, max_chars: int = 4000, problem: str = "") -> tuple:
+    """Trim an oversized codebase down to max_chars while keeping whatever's
+    included STRUCTURALLY COMPLETE (whole functions/classes, never
+    fragments) and prioritized by RELEVANCE to the reported problem —
+    replaces a fixed head/tail plus an evenly-sampled, frequently
+    incoherent slice of the middle that could (and, on any realistically-
+    sized file, would) skip the actual buggy function entirely while
+    stitching together orphaned fragments elsewhere.
+
+    Returns (trimmed_code, was_trimmed) so callers can warn when the model
+    didn't see the whole file."""
+    if len(code) <= max_chars:
+        return code, False
+
+    lines = code.split("\n")
+    header, chunks = _split_into_chunks(lines)
+    header_text = "\n".join(header)
+
+    if not chunks:
+        return _fallback_trim(lines, max_chars), True
+
+    problem_words = _meaningful_words(problem) if problem else set()
+    chunk_word_sets = [_meaningful_words(name + " " + " ".join(chunk_lines)) for name, chunk_lines in chunks]
+    # IDF-style weighting: a problem word shared by many chunks (e.g. a
+    # phrase repeated across a batch of near-identical helper functions) is
+    # weak, easily-coincidental evidence — with enough such chunks, that
+    # alone can outvote a genuinely relevant function that just doesn't
+    # happen to share any words with the problem statement. A word that
+    # appears in only one or two chunks is a much stronger, more
+    # distinctive signal, so it's weighted far higher.
+    doc_freq = {w: sum(1 for ws in chunk_word_sets if w in ws) for w in problem_words}
+
+    def _weighted_score(chunk_words: set) -> float:
+        matches = chunk_words & problem_words
+        return sum(1.0 / doc_freq[w] for w in matches if doc_freq.get(w, 0) > 0)
+
+    base_scores = [_weighted_score(ws) for ws in chunk_word_sets]
+
+    # Propagate relevance across simple call relationships: a low-level
+    # helper with the actual bug commonly shares no vocabulary at all with a
+    # symptom-level problem statement, but if a highly-relevant function
+    # calls it (or is called by it), that call relationship is itself real
+    # evidence — in both directions, since the caller is the context needed
+    # to understand why the callee matters, and vice versa.
+    chunk_names_only = [
+        name.split("(")[0].replace("async ", "").replace("def ", "").replace("class ", "").strip()
+        for name, _ in chunks
+    ]
+    call_pairs = [
+        (i, j)
+        for i, (_, lines_i) in enumerate(chunks)
+        for j, callee_name in enumerate(chunk_names_only)
+        if i != j and callee_name and f"{callee_name}(" in " ".join(lines_i)
+    ]
+    # Multiple hops so relevance flows transitively through a call chain
+    # (main -> train_model -> preprocess), each pass building on the
+    # previous one's updated scores rather than only the original ones.
+    propagated = list(base_scores)
+    for _hop in range(3):
+        next_scores = list(propagated)
+        for i, j in call_pairs:
+            next_scores[j] = max(next_scores[j], propagated[i] * 0.5)
+            next_scores[i] = max(next_scores[i], propagated[j] * 0.5)
+        propagated = next_scores
+
+    scored = [
+        (name, chunk_lines, propagated[idx], len("\n".join(chunk_lines)))
+        for idx, (name, chunk_lines) in enumerate(chunks)
+    ]
+    # Higher relevance first; among ties, smaller chunks first so more
+    # distinct pieces of the file fit in the same budget.
+    order = sorted(range(len(scored)), key=lambda i: (-scored[i][2], scored[i][3]))
+
+    budget = max(0, max_chars - len(header_text) - 100)  # slack for markers/joins
+    included = set()
+    used = 0
+    for i in order:
+        size = scored[i][3]
+        if not included or used + size <= budget:
+            included.add(i)
+            used += size
+
+    out_parts = [header_text] if header_text.strip() else []
+    omitted_run = 0
+    for i, (name, chunk_lines, score, size) in enumerate(scored):
+        if i in included:
+            if omitted_run:
+                out_parts.append(f"# ... ({omitted_run} function/class definition(s) omitted — codebase too large to include in full) ...")
+                omitted_run = 0
+            out_parts.append("\n".join(chunk_lines))
+        else:
+            omitted_run += 1
+    if omitted_run:
+        out_parts.append(f"# ... ({omitted_run} function/class definition(s) omitted — codebase too large to include in full) ...")
+
+    return "\n\n".join(p for p in out_parts if p.strip()), True
+
+
+def trim_codebase(code: str, max_chars: int = 4000, problem: str = "") -> str:
+    """Backward-compatible wrapper over smart_trim_codebase for call sites
+    that just want the trimmed text without the was_trimmed flag."""
+    trimmed, _ = smart_trim_codebase(code, max_chars, problem)
+    return trimmed
 
 ROLE_CONTEXT = {
     "data_engineer":  "data pipelines, ETL/ELT, orchestration (Airflow/Prefect/dbt), Spark, data quality, schema design",
@@ -139,6 +309,10 @@ GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 # gets by far the larger budget since it has to emit an entire file.
 AUTO_FIXES_MAX_TOKENS = int(os.getenv("AUTO_FIXES_MAX_TOKENS", "4096"))
 AUTO_PATCH_MAX_TOKENS = int(os.getenv("AUTO_PATCH_MAX_TOKENS", "8192"))
+# How much of the input codebase smart_trim_codebase is allowed to keep before
+# it has to start dropping whole functions/classes. Input tokens are far
+# cheaper than the output budget above, so this can be generous.
+AUTO_CODEBASE_MAX_CHARS = int(os.getenv("AUTO_CODEBASE_MAX_CHARS", "12000"))
 
 async def claude_stream(messages: list, temperature: float = 0.1):
     client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -191,7 +365,11 @@ async def ai_stream(messages: list, temperature: float = 0.1):
     else:
         return ollama_stream(messages, temperature)
 
-MAX_CODEBASE_SIZE = 50_000  # 50KB hard limit
+# Raised from the original 50KB now that smart_trim_codebase can make
+# meaningful use of a larger input (whole relevant functions/classes) instead
+# of the old naive head/tail/sample, which made anything past a few dozen
+# lines mostly pointless to accept in the first place.
+MAX_CODEBASE_SIZE = 200_000  # 200KB hard limit
 MAX_REQUESTS_PER_SESSION = 20  # max steps per session
 
 def guard_codebase(codebase: str):
@@ -288,8 +466,6 @@ def classify_json_failure(raw: str) -> dict:
         "decoder_pos": decoder_pos,
     }
 
-
-import re as _re
 
 def sanitize_input(text: str, max_len: int = 50000) -> str:
     """Strip null bytes and limit length."""
@@ -392,6 +568,35 @@ async def ai_complete(messages: list, temperature: float = 0.1, max_tokens: int 
 def _hit_token_limit(stop_reason: str | None) -> bool:
     # Anthropic: "max_tokens" · Groq: "length" · Ollama: "length"
     return stop_reason in ("max_tokens", "length")
+
+
+def _classify_provider_error(exc: Exception) -> dict:
+    """Turn a raw provider SDK exception (rate limit, auth failure, bad
+    request, timeout, ...) into a clean, structured error instead of an
+    unhandled 500. Discovered this was needed live: a real rate-limit
+    exhaustion during testing crashed the endpoint with a raw traceback
+    instead of a usable response. anthropic/groq (both OpenAI-API-style
+    clients) expose a status_code attribute on their API error classes;
+    fall back to the exception's class name / message when that's missing
+    (e.g. network-level errors that never got a response at all)."""
+    status_code = getattr(exc, "status_code", None)
+    name = type(exc).__name__.lower()
+    message = str(exc)
+    if status_code == 429 or "ratelimit" in name:
+        kind, user_message = "rate_limited", (
+            "The model provider's rate limit was hit. Try again shortly, or with a smaller codebase."
+        )
+    elif status_code in (401, 403) or "auth" in name or "permission" in name:
+        kind, user_message = "provider_auth_error", (
+            "The model provider rejected the request (authentication/authorization) — check the API key configuration."
+        )
+    elif status_code == 400 or "badrequest" in name:
+        kind, user_message = "provider_bad_request", "The model provider rejected the request as invalid."
+    elif "timeout" in name or "timeout" in message.lower():
+        kind, user_message = "provider_timeout", "The model provider took too long to respond. Try again."
+    else:
+        kind, user_message = "provider_error", "The model provider returned an unexpected error."
+    return {"error": kind, "message": user_message, "provider_detail": message, "status_code": status_code}
 
 
 # --- patched_codebase validation ---------------------------------------
@@ -944,7 +1149,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
         ["pipeline","schema_quality","performance","model_health","security","code_quality","environment","testing"]
         if get_skill(req.role, d)
     ])
-    req.codebase = sanitize_input(req.codebase, 50000)
+    req.codebase = sanitize_input(req.codebase, MAX_CODEBASE_SIZE)
     req.problem = sanitize_input(req.problem, 2000)
     guard_codebase(req.codebase)
     role_skill_context = all_skills[:2000] if all_skills else ROLE_CONTEXT.get(req.role, "")
@@ -1238,6 +1443,12 @@ class AutoResolveRequest(BaseModel):
 @app.post("/resolve/auto")
 @limiter.limit("5/minute")
 async def resolve_auto(req: AutoResolveRequest, request: Request):
+    # /analyze already guards its own input, but /resolve/auto can be
+    # (and, via direct API access rather than the normal UI flow, has been)
+    # called on its own — it should enforce the same size ceiling rather
+    # than relying on a different endpoint to have done it first.
+    guard_codebase(req.codebase)
+
     # A holistic "find ALL issues" audit shouldn't be scoped to a single
     # domain's checklist — /analyze's domain classification is a best guess
     # from a trimmed excerpt, and gating on just that one domain (e.g.
@@ -1251,7 +1462,16 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         if get_skill(req.role, d)
     ])
     skill_prompt = all_skills[:2500] if all_skills else ROLE_CONTEXT.get(req.role, "")
-    trimmed_codebase = trim_codebase(req.codebase, 3000)
+    # Input tokens are cheap relative to the output budget (AUTO_PATCH_MAX_TOKENS is
+    # already 8192) — the old 3000-char limit was never actually necessitated by the
+    # model's context window (131K tokens on Groq's llama-3.3-70b-versatile), it just
+    # meant any realistically-sized file got sliced into scattered, incoherent
+    # fragments that could (and empirically did, in testing) skip the actual buggy
+    # function entirely. Structural + relevance-aware trimming makes far better use
+    # of a larger budget than the old sampling did of the smaller one.
+    trimmed_codebase, codebase_was_trimmed = smart_trim_codebase(
+        req.codebase, AUTO_CODEBASE_MAX_CHARS, problem=req.problem
+    )
 
     # --- Call 1: diagnose + explain fixes (no patched_codebase in this call at all) ---
     fixes_system_prompt = (
@@ -1317,14 +1537,22 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         "Codebase:\n" + trimmed_codebase + "\n\n"
         "Identify and explain all necessary fixes."
     )
-    fixes_text, fixes_stop = await ai_complete(
-        [
-            {"role": "system", "content": fixes_system_prompt},
-            {"role": "user", "content": fixes_user_prompt},
-        ],
-        temperature=0.1,
-        max_tokens=AUTO_FIXES_MAX_TOKENS,
-    )
+    try:
+        fixes_text, fixes_stop = await ai_complete(
+            [
+                {"role": "system", "content": fixes_system_prompt},
+                {"role": "user", "content": fixes_user_prompt},
+            ],
+            temperature=0.1,
+            max_tokens=AUTO_FIXES_MAX_TOKENS,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        info = _classify_provider_error(e)
+        logger.error("resolve_auto[fixes]: provider error: %s", info["provider_detail"])
+        raise HTTPException(502, detail={**info, "stage": "fixes"})
+
     fixes_check = classify_json_failure(fixes_text)
     if fixes_check["kind"] != "valid":
         if fixes_check["kind"] == "truncated" or _hit_token_limit(fixes_stop):
@@ -1394,14 +1622,27 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
         "Codebase:\n" + trimmed_codebase + "\n\n"
         "Apply all the fixes listed above and return the complete patched codebase."
     )
-    patch_text, patch_stop = await ai_complete(
-        [
-            {"role": "system", "content": patch_system_prompt},
-            {"role": "user", "content": patch_user_prompt},
-        ],
-        temperature=0.1,
-        max_tokens=AUTO_PATCH_MAX_TOKENS,
-    )
+    try:
+        patch_text, patch_stop = await ai_complete(
+            [
+                {"role": "system", "content": patch_system_prompt},
+                {"role": "user", "content": patch_user_prompt},
+            ],
+            temperature=0.1,
+            max_tokens=AUTO_PATCH_MAX_TOKENS,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        info = _classify_provider_error(e)
+        logger.error("resolve_auto[patch]: provider error: %s", info["provider_detail"])
+        # Call 1 already succeeded — don't throw that work away.
+        raise HTTPException(502, detail={
+            **info, "stage": "patch",
+            "fixes": fixes_data.get("fixes", []),
+            "summary": fixes_data.get("summary", ""),
+        })
+
     patch_check = classify_json_failure(patch_text)
     if patch_check["kind"] != "valid":
         # Call 1 already succeeded — don't throw that work away.
@@ -1436,6 +1677,15 @@ async def resolve_auto(req: AutoResolveRequest, request: Request):
     # --- Validate: does patched_codebase actually reflect the claimed fixes,
     # and does it look like it'll run without a NameError from ordering? ---
     validation_warnings: list[str] = []
+
+    if codebase_was_trimmed:
+        validation_warnings.append(
+            "Validation: the submitted codebase was too large to analyze in full — some "
+            "function/class definitions were omitted (see the '# ... omitted ...' marker "
+            "in what was analyzed). This diagnosis and patch only cover the portions shown; "
+            "review the rest manually."
+        )
+        logger.warning("resolve_auto[validate]: codebase was trimmed before analysis")
 
     unreflected = find_unreflected_fixes(fixes_list, patched_code)
     if unreflected:

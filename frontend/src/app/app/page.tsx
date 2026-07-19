@@ -266,12 +266,18 @@ export default function App() {
     setAutoLoading(true);setAutoResult(null)
     if(abortRef.current) abortRef.current.abort()
     abortRef.current = new AbortController()
+    // Two sequential LLM calls with no automatic timeout used to mean a stalled
+    // request (slow model, rate-limit backoff) could hang indefinitely with no
+    // feedback. 90s covers a full patched-file regeneration on a large codebase;
+    // timeoutSignal is checked separately in the catch block so a genuine timeout
+    // still shows a message, unlike an intentional user-triggered abort.
+    const timeoutSignal = AbortSignal.timeout(90000)
     try {
       const res = await fetch(API+"/resolve/auto",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({codebase,role,problem,diagnostic,user_id:userId,session_id:sessionId}),
-        signal:abortRef.current.signal,
+        signal:AbortSignal.any([abortRef.current.signal, timeoutSignal]),
       })
       const data = await res.json()
       if(!res.ok) {
@@ -294,7 +300,22 @@ export default function App() {
         setAutoResult(data)
       }
       setActiveResult("auto")
-    } catch(e:any){if(e.name!=="AbortError")console.error(e)}
+    } catch(e:any) {
+      if(e.name==="AbortError") {
+        if(timeoutSignal.aborted) {
+          setAutoResult({
+            summary: "",
+            warnings: ["The request took too long and timed out (over 90s) — this can happen on larger codebases or when the model is rate-limited. Try again."],
+            fixes: [],
+            patched_codebase: "",
+          })
+          setActiveResult("auto")
+        }
+        // else: superseded by a new request or an explicit user cancel — stay silent, as before
+      } else {
+        console.error(e)
+      }
+    }
     setAutoLoading(false)
   }
 
