@@ -250,6 +250,24 @@ def trim_codebase(code: str, max_chars: int = 4000, problem: str = "") -> str:
     trimmed, _ = smart_trim_codebase(code, max_chars, problem)
     return trimmed
 
+
+def codebase_section(code: str, max_chars: int, problem: str = "") -> str:
+    """Build the 'Codebase:\\n...' prompt section used by every endpoint
+    that sends a codebase to the model. When smart_trim_codebase had to
+    drop content, appends a short note asking the model to flag it if the
+    omission affects its analysis — these endpoints stream plain text back
+    (no structured 'warnings' array to attach a flag to the way
+    /resolve/auto does), so the model's own response text is the only
+    place this can surface for now."""
+    trimmed, was_trimmed = smart_trim_codebase(code, max_chars, problem)
+    note = (
+        "\n\n(Note: this codebase was too large to include in full — some "
+        "function/class definitions were omitted, marked with '# ... omitted ...'. "
+        "If that affects your analysis, say so.)"
+        if was_trimmed else ""
+    )
+    return "Codebase:\n" + trimmed + note
+
 ROLE_CONTEXT = {
     "data_engineer":  "data pipelines, ETL/ELT, orchestration (Airflow/Prefect/dbt), Spark, data quality, schema design",
     "sde":            "software architecture, APIs, system design, performance, code quality, testing, CI/CD",
@@ -1181,7 +1199,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
     user_prompt = (
         "Role: " + req.role.replace("_", " ") + "\n"
         "Problem: " + req.problem + "\n\n"
-        "Codebase:\n" + trim_codebase(req.codebase, 4000)
+        + codebase_section(req.codebase, 4000, req.problem)
     )
     return StreamingResponse(
         await ai_stream([
@@ -1242,7 +1260,7 @@ async def resolve_step(req: ResolveRequest, request: Request):
         "Diagnostic: " + req.diagnostic + "\n"
         "Step number: " + str(req.step_number)
         + steps_context + issue_instruction + override + "\n\n"
-        "Codebase:\n" + trim_codebase(req.codebase, 3000) + "\n\n"
+        + codebase_section(req.codebase, 3000, req.problem) + "\n\n"
         "Provide the fix for the specific issue instructed above."
     )
     return StreamingResponse(
@@ -1422,7 +1440,7 @@ async def advisory(req: AdvisoryRequest, request: Request):
         "Role: " + req.role.replace("_", " ") + "\n"
         "Problem: " + req.problem + "\n"
         "Diagnostic: " + json.dumps(req.diagnostic) + "\n\n"
-        "Codebase:\n" + trim_codebase(req.codebase, 4000)
+        + codebase_section(req.codebase, 4000, req.problem)
     )
     return StreamingResponse(
         await ai_stream([
@@ -1971,7 +1989,7 @@ async def resolve_plan(req: PlanRequest):
         f"Role: {req.role.replace('_', ' ')}\n"
         f"Problem: {req.problem}\n"
         f"Diagnostic: {json.dumps(req.diagnostic)}\n\n"
-        f"Codebase:\n{sanitize_input(req.codebase, 6000)}"
+        + codebase_section(req.codebase.replace("\x00", ""), 6000, req.problem)
     )
     return StreamingResponse(
         await ai_stream([
